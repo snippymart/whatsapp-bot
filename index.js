@@ -3,15 +3,15 @@ import express from "express";
 const app = express();
 app.use(express.json({ type: "*/*" }));
 
-// ===== CONFIG =====
+// ================= CONFIG =================
 const WASENDER_SESSION_KEY = process.env.WASENDER_SESSION_KEY;
 const SEND_URL = "https://api.wasenderapi.com/api/send-message";
-const SITE = "https://snippymart.com";
+const API_BASE = "https://snippymart.com/api/public/whatsapp";
 
-// Dedup
+// In-memory deduplication
 const handledMessages = new Set();
 
-// ===== HELPERS =====
+// ================= HELPERS =================
 function extractCore(body) {
   try {
     const msg = body?.data?.messages;
@@ -56,14 +56,14 @@ async function sendText(sessionId, to, text) {
 
 async function sendMenu(sessionId, to) {
   const res = await fetch(`${API_BASE}/products`);
-  const text = await res.text();
+  const raw = await res.text();
 
   let products;
   try {
-    products = JSON.parse(text);
+    products = JSON.parse(raw);
   } catch {
-    console.error("❌ Invalid JSON from products API:", text.slice(0, 200));
-    await sendText(sessionId, to, "⚠️ Menu temporarily unavailable.");
+    console.error("❌ Products API returned non-JSON:", raw.slice(0, 200));
+    await sendText(sessionId, to, "⚠️ Product menu temporarily unavailable.");
     return;
   }
 
@@ -100,7 +100,7 @@ async function sendMenu(sessionId, to) {
   console.log("📤 Product menu sent");
 }
 
-// ===== WEBHOOK =====
+// ================= WEBHOOK =================
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
@@ -113,23 +113,23 @@ app.post("/webhook", async (req, res) => {
 
   console.log("📝 EXTRACTED:", core);
 
-  // Dedup
+  // Deduplicate (Wasender sends multiple events)
   if (handledMessages.has(core.id)) {
     console.log("⏭️ Duplicate ignored:", core.id);
     return;
   }
   handledMessages.add(core.id);
 
-  // 🚀 SEND PRODUCT MENU
+  // Send product menu
   await sendMenu(core.sessionId, core.from);
 
-  console.log("📤 Menu sent to", core.from);
   console.log("======================================");
 });
 
-// Health
+// ================= HEALTH =================
 app.get("/", (_, res) => res.send("Webhook live"));
 
-app.listen(process.env.PORT || 8080, () => {
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
   console.log("🚀 SERVER LISTENING");
 });
