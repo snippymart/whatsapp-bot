@@ -6,7 +6,7 @@ app.use(express.json({ type: "*/*" }));
 
 // ================= CONFIG =================
 const WASENDER_SESSION_KEY = process.env.WASENDER_SESSION_KEY;
-const ADMIN_PHONE = process.env.ADMIN_PHONE || "94776512486";
+const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || "94776512486").split(",");
 const SEND_URL = "https://api.wasenderapi.com/api/send-message";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
@@ -14,7 +14,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SUPABASE_URL = "https://vuffzfuklzzcnfnubtzx.supabase.co/functions/v1";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ1ZmZ6ZnVrbHp6Y25mbnVidHp4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg2OTQ1NjAsImV4cCI6MjA4NDI3MDU2MH0.qHjJYOrNi1cBYPYapmHMJgDxsI50sHAKUAvv0VnPQFM";
 
-// Initialize OpenAI (only if API key exists)
+// Initialize OpenAI
 let openai = null;
 if (OPENAI_API_KEY) {
   openai = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -24,8 +24,13 @@ if (OPENAI_API_KEY) {
 const botUsers = new Set();
 const handledMessages = new Map();
 const conversationHistory = new Map();
-const escalatedUsers = new Set();
+const humanHandling = new Map();
+const blockedUsers = new Set();
 let productKnowledgeBase = "";
+
+function isAdmin(phone) {
+  return ADMIN_NUMBERS.includes(phone);
+}
 
 // Auto-cleanup
 setInterval(() => {
@@ -42,15 +47,22 @@ setInterval(() => {
       conversationHistory.delete(user);
     }
   }
+  
+  const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [user, timestamp] of humanHandling.entries()) {
+    if (timestamp < twoHoursAgo) {
+      humanHandling.delete(user);
+    }
+  }
 }, 5 * 60 * 1000);
 
-// ================= LOAD PRODUCT KNOWLEDGE =================
+// ================= LOAD WHATSAPP-ENABLED PRODUCTS ONLY =================
 async function loadProductKnowledge() {
   try {
-    console.log("📚 Loading product catalog...");
+    console.log("📚 Loading WhatsApp-enabled products...");
     
     const res = await fetch(
-      `https://vuffzfuklzzcnfnubtzx.supabase.co/rest/v1/products?select=*`,
+      `https://vuffzfuklzzcnfnubtzx.supabase.co/rest/v1/whatsapp_product_config?select=*,product:products!inner(*)&enabled=eq.true`,
       {
         headers: {
           apikey: SUPABASE_ANON_KEY,
@@ -64,48 +76,94 @@ async function loadProductKnowledge() {
       return;
     }
 
-    const products = await res.json();
+    const whatsappProducts = await res.json();
     
-    let knowledge = `# Snippy Mart - Product Catalog\n\n`;
-    knowledge += `You are a product expert for Snippy Mart digital services.\n\n`;
+    if (!whatsappProducts || whatsappProducts.length === 0) {
+      console.warn("⚠️ No WhatsApp-enabled products found");
+      productKnowledgeBase = "No products available yet.";
+      return;
+    }
 
-    products.forEach(p => {
+    let knowledge = `# Snippy Mart - WhatsApp Product Catalog\n\n`;
+    knowledge += `You are a product expert for Snippy Mart. Answer ONLY about these enabled products:\n\n`;
+
+    whatsappProducts.forEach((wp) => {
+      const p = wp.product;
+      
       knowledge += `## ${p.name}\n`;
-      knowledge += `**Price**: $${p.price}\n`;
+      knowledge += `**Price**: LKR ${p.price.toLocaleString('en-US')}\n`;
+      knowledge += `**Menu Title**: ${wp.menu_title}\n`;
       
       if (p.description) {
         knowledge += `**Description**: ${p.description}\n`;
       }
       
-      if (p.name.toLowerCase().includes('chatgpt')) {
-        knowledge += `**Type**: AI Assistant\n`;
-        knowledge += `**Requirements**: Email only\n`;
-        knowledge += `**Includes**: GPT-4, DALL-E, plugins, web browsing\n`;
-      } else if (p.name.toLowerCase().includes('cursor')) {
-        knowledge += `**Type**: AI Code Editor\n`;
-        knowledge += `**Requirements**: Email only\n`;
-        knowledge += `**Includes**: Unlimited AI completions, chat, multi-file editing\n`;
-      } else if (p.name.toLowerCase().includes('claude')) {
-        knowledge += `**Type**: AI Assistant\n`;
-        knowledge += `**Requirements**: Email only\n`;
-        knowledge += `**Includes**: Claude 3.5 Sonnet, priority access\n`;
-      } else if (p.name.toLowerCase().includes('github')) {
-        knowledge += `**Type**: AI Code Assistant\n`;
-        knowledge += `**Requirements**: Email + GitHub username\n`;
-        knowledge += `**Includes**: Code suggestions, multiple language support\n`;
+      if (wp.trigger_keywords && wp.trigger_keywords.length > 0) {
+        knowledge += `**Keywords**: ${wp.trigger_keywords.join(', ')}\n`;
       }
       
-      knowledge += `\n`;
+      const productName = p.name.toLowerCase();
+      
+      if (productName.includes('chatgpt')) {
+        knowledge += `**Type**: AI Assistant\n`;
+        knowledge += `**Requirements**: Email address only\n`;
+        knowledge += `**Includes**: GPT-4, DALL-E 3, plugins, web browsing\n`;
+        knowledge += `**Platform**: OpenAI ChatGPT\n`;
+      } else if (productName.includes('cursor')) {
+        knowledge += `**Type**: AI Code Editor\n`;
+        knowledge += `**Requirements**: Email address only\n`;
+        knowledge += `**Includes**: Unlimited AI autocomplete, chat, multi-file editing\n`;
+        knowledge += `**Platform**: Cursor IDE\n`;
+      } else if (productName.includes('claude')) {
+        knowledge += `**Type**: AI Assistant\n`;
+        knowledge += `**Requirements**: Email address only\n`;
+        knowledge += `**Includes**: Claude 3.5 Sonnet, priority access, longer context\n`;
+        knowledge += `**Platform**: Anthropic Claude\n`;
+      } else if (productName.includes('github') && productName.includes('copilot')) {
+        knowledge += `**Type**: AI Code Assistant\n`;
+        knowledge += `**Requirements**: Email + GitHub username\n`;
+        knowledge += `**Includes**: AI code suggestions, autocomplete, chat\n`;
+        knowledge += `**Platform**: GitHub Copilot\n`;
+      } else if (productName.includes('netflix')) {
+        knowledge += `**Type**: Streaming Service\n`;
+        knowledge += `**Requirements**: Email address only\n`;
+        knowledge += `**Includes**: 4K streaming, multiple profiles\n`;
+        knowledge += `**Platform**: Netflix\n`;
+      } else if (productName.includes('spotify')) {
+        knowledge += `**Type**: Music Streaming\n`;
+        knowledge += `**Requirements**: Email address only\n`;
+        knowledge += `**Includes**: Ad-free music, offline downloads\n`;
+        knowledge += `**Platform**: Spotify\n`;
+      } else {
+        knowledge += `**Type**: Digital Service\n`;
+        knowledge += `**Requirements**: Email address (additional info may be required)\n`;
+      }
+      
+      knowledge += `**Slug**: ${p.slug}\n`;
+      knowledge += `**Order Link**: https://snippymart.com/product/${p.slug}\n`;
+      knowledge += `\n---\n\n`;
     });
 
-    knowledge += `\n## General Info:\n`;
-    knowledge += `- Delivery: Within 24 hours (usually faster)\n`;
-    knowledge += `- Payment: Bank Transfer or Binance USDT\n`;
-    knowledge += `- All products are FRESH activations (no sharing)\n`;
-    knowledge += `- Credentials sent via email\n`;
+    knowledge += `\n## General Information:\n`;
+    knowledge += `- **Currency**: All prices in Sri Lankan Rupees (LKR)\n`;
+    knowledge += `- **Delivery Time**: Within 24 hours (usually much faster)\n`;
+    knowledge += `- **Payment Methods**: Bank Transfer or Binance USDT (Card payment available via team)\n`;
+    knowledge += `- **Account Type**: Fresh activations on new accounts (no sharing)\n`;
+    knowledge += `- **Credentials**: Sent via email after payment\n`;
+    knowledge += `- **Support**: Available via WhatsApp\n`;
+    knowledge += `- **Website**: snippymart.com\n\n`;
+
+    knowledge += `## Important Rules for You:\n`;
+    knowledge += `1. ONLY mention products listed above (these are WhatsApp-enabled)\n`;
+    knowledge += `2. If asked about a product NOT listed above, say: "We don't have that available via WhatsApp currently. Type *HUMAN* to ask our team!"\n`;
+    knowledge += `3. NEVER make up features or prices\n`;
+    knowledge += `4. If you don't know something, say: "I'm not sure about that. Type *HUMAN* to speak with our team!"\n`;
+    knowledge += `5. Always use LKR for prices (never $)\n`;
+    knowledge += `6. Be honest and helpful\n`;
+    knowledge += `7. For ordering questions, direct to snippymart.com\n`;
 
     productKnowledgeBase = knowledge;
-    console.log("✅ Knowledge loaded:", products.length, "products");
+    console.log("✅ Loaded", whatsappProducts.length, "WhatsApp-enabled products");
   } catch (err) {
     console.error("❌ Knowledge error:", err.message);
   }
@@ -113,26 +171,35 @@ async function loadProductKnowledge() {
 
 loadProductKnowledge();
 
-// ================= AI PRODUCT EXPERT =================
+// ================= AI EXPERT =================
 async function askProductExpert(userPhone, userMessage) {
   if (!openai) {
-    console.log("⚠️ OpenAI not configured");
-    return "I'm running in basic mode. Type *MENU* to see products or *HUMAN* for support!";
+    return "I'm in basic mode. Type *MENU* for products or *HUMAN* for support!";
   }
 
   try {
-    // Check for escalation keywords
+    const orderingKeywords = [
+      'how to buy', 'how to order', 'how to purchase', 'how do i buy',
+      'how can i order', 'payment', 'pay', 'checkout', 'card payment',
+      'credit card', 'debit card', 'buy this', 'want to buy',
+      'place order', 'how to get', 'payment methods', 'how can i pay'
+    ];
+    
+    const lowerMsg = userMessage.toLowerCase();
+    const isOrderingQuestion = orderingKeywords.some(kw => lowerMsg.includes(kw));
+    
+    if (isOrderingQuestion) {
+      return "ORDER_INFO";
+    }
+
     const escalationKeywords = [
       'human', 'person', 'talk to someone', 'speak to',
       'representative', 'agent', 'support', 'help me',
       'contact', 'admin', 'manager', 'real person',
-      'not helpful', 'don\'t understand', 'confused'
+      'not helpful', 'confused', "don't understand"
     ];
     
-    const lowerMsg = userMessage.toLowerCase();
-    const needsHuman = escalationKeywords.some(kw => lowerMsg.includes(kw));
-    
-    if (needsHuman) {
+    if (escalationKeywords.some(kw => lowerMsg.includes(kw))) {
       return "ESCALATE";
     }
 
@@ -149,26 +216,44 @@ async function askProductExpert(userPhone, userMessage) {
     const messages = [
       {
         role: "system",
-        content: `You are a product expert for Snippy Mart.
+        content: `You are a helpful product expert for Snippy Mart, a Sri Lankan digital service provider.
 
 ${productKnowledgeBase}
 
-## Your Role:
-Answer questions about OUR products ONLY. Be helpful, accurate, and concise.
+## How to Order:
+When users ask about ordering/buying/payment, tell them to visit **snippymart.com** and:
+- Bank Transfer or Binance USDT available now
+- Card payment available (contact team for secure link)
 
-## Rules:
-1. ONLY discuss products in the catalog above
-2. If asked about products we DON'T have, say: "We don't offer that currently. Reply *MENU* for available products!"
-3. If you're UNSURE about something, say: "I'm not 100% sure. Type *HUMAN* to speak with our team!"
-4. Be specific about features, pricing, and requirements
-5. Keep responses under 350 characters
-6. Use emojis appropriately
-7. Always end with a call-to-action
-8. NEVER make up information
-9. NEVER share sensitive data
+## Response Guidelines:
+1. **Be Honest**: If you don't know something, admit it and suggest typing *HUMAN*
+2. **Currency**: Always use "LKR" not "$" - format like "LKR 5,000"
+3. **Only Available Products**: Answer ONLY about products listed in your catalog
+4. **Be Concise**: Keep responses under 350 characters
+5. **Be Helpful**: Use emojis, be friendly
+6. **Call-to-Action**: End with "Reply *MENU* to order!" or "Type *HUMAN* for more help!"
+7. **Never Make Up**: If unsure about features, don't guess
+8. **Payment Questions**: Direct to website with payment options
 
-Q: "Does ChatGPT include GPT-4?"
-A: "Yes! ✅ ChatGPT Plus ($20) includes full GPT-4, DALL-E 3, plugins & web browsing. Only email needed. Want to order? Reply *MENU*!"`
+## Example Responses:
+
+User: "How do I buy?"
+You: "Easy! 🛍️ Visit snippymart.com and place your order. We accept Bank Transfer & Binance USDT 💳 For card payment, contact us and we'll send a secure payment link! Reply *MENU* to browse products!"
+
+User: "Does Cursor include GPT-4?"
+You: "Cursor has its own AI model optimized for coding! It's different from ChatGPT. For coding, Cursor is excellent 💻 LKR 3,000. Want to order? Reply *MENU*!"
+
+User: "What about Spotify?"
+You (if not in catalog): "We don't have Spotify available via WhatsApp currently. Type *HUMAN* to ask our team if it's available!"
+
+User: "How much is ChatGPT?"
+You: "ChatGPT Plus is LKR 6,500 ✅ Includes GPT-4, DALL-E, plugins. Just need your email! Reply *MENU* to order!"
+
+User: "Is it safe?"
+You: "Yes! You get your OWN fresh account with new credentials. No sharing, 100% safe ✅ Visit snippymart.com to order!"
+
+User: "Can I pay with card?"
+You: "Yes! 💳 For card payment, contact our team and we'll send you a secure payment link. Or use Bank Transfer/Binance now at snippymart.com! Type *HUMAN* to reach our team!"`
       },
       ...conversation.messages.slice(-4),
       {
@@ -232,10 +317,6 @@ async function send(payload) {
     body: JSON.stringify(payload)
   });
 
-  const out = await res.text();
-  if (!res.ok) {
-    console.error("📤 SEND FAILED:", res.status, out);
-  }
   return res.ok;
 }
 
@@ -249,7 +330,7 @@ async function sendText(sessionId, to, text) {
 }
 
 async function sendWithButtons(sessionId, to, text, buttons) {
-  return send({
+  const success = await send({
     sessionId,
     to,
     type: "buttons",
@@ -259,17 +340,12 @@ async function sendWithButtons(sessionId, to, text, buttons) {
       text: btn.text
     }))
   });
-}
-
-async function notifyAdmin(sessionId, userPhone, lastMessage) {
-  const adminMessage = `🚨 *User Escalation*\n\n` +
-    `User: ${userPhone}\n` +
-    `Last message: "${lastMessage}"\n` +
-    `Status: Waiting for human support\n\n` +
-    `_Reply to this user directly to assist_`;
   
-  await sendText(sessionId, ADMIN_PHONE, adminMessage);
-  console.log("📢 Admin notified:", userPhone);
+  if (!success) {
+    await sendText(sessionId, to, text);
+  }
+  
+  return success;
 }
 
 // ================= API CALLS =================
@@ -322,24 +398,20 @@ async function sendMenu(sessionId, to) {
   }
 
   let menuText = "🛍️ *Snippy Mart Products*\n\n";
+  menuText += "_Reply with number to view:_\n\n";
   
   products.forEach((p, index) => {
     menuText += `${index + 1}️⃣ ${p.menuTitle}\n`;
   });
   
-  menuText += "\n💬 _Ask me anything about products!_\n";
-  menuText += "_Or type *HUMAN* for live support_";
+  menuText += "\n💬 *Ask me anything!*\n";
+  menuText += "_Type *HUMAN* for support_";
 
-  const buttonSuccess = await sendWithButtons(sessionId, to, menuText, [
-    { id: "human", text: "💬 Talk to Human" },
-    { id: "reload", text: "🔄 Reload Menu" }
+  await sendWithButtons(sessionId, to, menuText, [
+    { id: "human", text: "💬 Talk to Team" }
   ]);
 
-  if (!buttonSuccess) {
-    await sendText(sessionId, to, menuText);
-  }
-
-  await logEvent(to, "MENU_REQUEST", null, "menu");
+  await logEvent(to, "MENU_REQUEST");
   if (!global.userProducts) global.userProducts = new Map();
   global.userProducts.set(to, products);
 }
@@ -351,88 +423,177 @@ async function sendProductFlow(sessionId, to, productId) {
     return;
   }
 
-  await logEvent(to, "PRODUCT_VIEW", productId, productId);
+  await logEvent(to, "PRODUCT_VIEW", productId);
 
   for (const step of flow.flowSteps) {
-    const message = `*${step.title}*\n\n${step.message}`;
-    await sendText(sessionId, to, message);
+    await sendText(sessionId, to, `*${step.title}*\n\n${step.message}`);
     if (step.delayMs > 0) {
       await new Promise(resolve => setTimeout(resolve, step.delayMs));
     }
   }
 
   if (flow.showOrderLink && flow.orderUrl) {
-    const orderMsg = `👉 *Order Now*\n${flow.orderUrl}\n\n_Questions? Just ask! Need help? Type *HUMAN*_`;
-    
-    const buttonSuccess = await sendWithButtons(sessionId, to, orderMsg, [
-      { id: "menu", text: "🛍️ More Products" },
-      { id: "human", text: "💬 Talk to Human" }
-    ]);
-
-    if (!buttonSuccess) {
-      await sendText(sessionId, to, orderMsg);
-    }
-
+    await sendWithButtons(sessionId, to, 
+      `👉 *Order Now*\n${flow.orderUrl}\n\n_Questions? Just ask!_`, 
+      [
+        { id: "menu", text: "🛍️ More Products" },
+        { id: "human", text: "💬 Talk to Team" }
+      ]
+    );
     await logEvent(to, "ORDER_CLICK", productId);
   }
 }
 
-async function escalateToHuman(sessionId, to, lastMessage) {
-  escalatedUsers.add(to);
+async function sendOrderingInfo(sessionId, to) {
+  const orderMsg = "🛍️ *How to Order on Snippy Mart*\n\n" +
+    "1️⃣ Visit our website:\n" +
+    "🌐 *snippymart.com*\n\n" +
+    "2️⃣ Choose your product and checkout\n\n" +
+    "💳 *Payment Options:*\n" +
+    "✅ Bank Transfer (Available now)\n" +
+    "✅ Binance USDT (Available now)\n" +
+    "💳 Card Payment (Contact us for secure link)\n\n" +
+    "_For card payment, type *HUMAN* and our team will send you a secure payment link!_\n\n" +
+    "Reply *MENU* to browse products! 🚀";
+  
+  await sendWithButtons(sessionId, to, orderMsg, [
+    { id: "menu", text: "🛍️ View Products" },
+    { id: "human", text: "💬 Card Payment" }
+  ]);
+}
+
+async function escalateToHuman(sessionId, to) {
+  humanHandling.set(to, Date.now());
   
   await sendText(
     sessionId,
     to,
-    "👤 *Connecting you to our team...*\n\n" +
-    "✅ Your request has been forwarded to our support team.\n" +
-    "📱 Someone will respond shortly!\n\n" +
-    "_In the meantime, you can still ask questions or type *MENU*_"
+    "👤 *Connecting to support...*\n\n" +
+    "✅ Our team will respond shortly.\n\n" +
+    "_Feel free to continue chatting!_"
   );
 
-  await notifyAdmin(sessionId, to, lastMessage);
-  await logEvent(to, "ESCALATION", null, lastMessage);
-  
+  await logEvent(to, "ESCALATION");
   console.log("🆘 Escalated:", to);
 }
 
 async function activateBot(sessionId, to) {
   botUsers.add(to);
+  humanHandling.delete(to);
   
   const welcomeMsg = "🤖 *Snippy Mart AI Assistant*\n\n" +
     "✅ I'm here to help!\n\n" +
     "💬 *Ask me about:*\n" +
-    "• Product features\n" +
-    "• Pricing & requirements\n" +
-    "• Delivery & support\n\n" +
-    "📱 Commands:\n" +
+    "• Products & features\n" +
+    "• Pricing (LKR)\n" +
+    "• Requirements & delivery\n" +
+    "• How to order\n\n" +
+    "📱 *Commands:*\n" +
     "• *MENU* - Browse products\n" +
     "• *HUMAN* - Talk to team\n" +
     "• *STOP* - Exit bot";
 
-  const success = await sendWithButtons(sessionId, to, welcomeMsg, [
-    { id: "menu", text: "🛍️ View Products" },
-    { id: "human", text: "💬 Talk to Human" }
+  await sendWithButtons(sessionId, to, welcomeMsg, [
+    { id: "menu", text: "🛍️ Products" },
+    { id: "human", text: "💬 Support" }
   ]);
-
-  if (!success) {
-    await sendText(sessionId, to, welcomeMsg);
-  }
 
   console.log("✅ Activated:", to);
 }
 
 async function deactivateBot(sessionId, to) {
   botUsers.delete(to);
-  escalatedUsers.delete(to);
+  humanHandling.delete(to);
   conversationHistory.delete(to);
   if (global.userProducts) global.userProducts.delete(to);
   
-  await sendText(
-    sessionId,
-    to,
-    "👋 *Bot Deactivated*\n\nYou can chat normally with our team.\n\n_Send *SNIPPY* to reactivate_"
-  );
+  await sendText(sessionId, to, "👋 *Bot Deactivated*\n\n_Send *SNIPPY* to reactivate_");
   console.log("✅ Deactivated:", to);
+}
+
+// ================= ADMIN COMMANDS =================
+async function handleAdminCommand(sessionId, from, text) {
+  const cmd = text.toLowerCase().trim();
+
+  if (cmd.startsWith('/resume ')) {
+    const targetPhone = cmd.split(' ')[1];
+    humanHandling.delete(targetPhone);
+    await sendText(sessionId, from, `✅ Bot resumed for ${targetPhone}`);
+    await sendText(sessionId, targetPhone, "🤖 *Bot resumed!* Reply *MENU* for products!");
+    return true;
+  }
+
+  if (cmd.startsWith('/block ')) {
+    const targetPhone = cmd.split(' ')[1];
+    blockedUsers.add(targetPhone);
+    botUsers.delete(targetPhone);
+    await sendText(sessionId, from, `🚫 Blocked ${targetPhone}`);
+    return true;
+  }
+
+  if (cmd.startsWith('/unblock ')) {
+    const targetPhone = cmd.split(' ')[1];
+    blockedUsers.delete(targetPhone);
+    await sendText(sessionId, from, `✅ Unblocked ${targetPhone}`);
+    return true;
+  }
+
+  if (cmd.startsWith('/info ')) {
+    const targetPhone = cmd.split(' ')[1];
+    const info = `📊 *User: ${targetPhone}*\n\n` +
+      `Bot Mode: ${botUsers.has(targetPhone) ? '✅' : '❌'}\n` +
+      `Human: ${humanHandling.has(targetPhone) ? '✅' : '❌'}\n` +
+      `Blocked: ${blockedUsers.has(targetPhone) ? '🚫' : '❌'}\n` +
+      `AI Chat: ${conversationHistory.has(targetPhone) ? '✅' : '❌'}`;
+    await sendText(sessionId, from, info);
+    return true;
+  }
+
+  if (cmd === '/stats') {
+    const stats = `📊 *Bot Stats*\n\n` +
+      `👥 Active: ${botUsers.size}\n` +
+      `🤝 Human: ${humanHandling.size}\n` +
+      `🚫 Blocked: ${blockedUsers.size}\n` +
+      `💬 Chats: ${conversationHistory.size}\n` +
+      `🤖 AI: ${openai ? '✅' : '❌'}`;
+    await sendText(sessionId, from, stats);
+    return true;
+  }
+
+  if (cmd.startsWith('/broadcast ')) {
+    const message = text.substring('/broadcast '.length);
+    let sent = 0;
+    for (const user of botUsers) {
+      await sendText(sessionId, user, `📢 *Announcement*\n\n${message}`);
+      sent++;
+    }
+    await sendText(sessionId, from, `✅ Sent to ${sent} users`);
+    return true;
+  }
+
+  if (cmd === '/help' || cmd === '/commands') {
+    const help = `🔧 *Admin Commands*\n\n` +
+      `👤 User Control:\n` +
+      `• /resume {phone}\n` +
+      `• /block {phone}\n` +
+      `• /unblock {phone}\n` +
+      `• /info {phone}\n\n` +
+      `📊 System:\n` +
+      `• /stats\n` +
+      `• /broadcast {msg}\n` +
+      `• /reload\n` +
+      `• /help`;
+    await sendText(sessionId, from, help);
+    return true;
+  }
+
+  if (cmd === '/reload') {
+    await loadProductKnowledge();
+    await sendText(sessionId, from, "✅ Products reloaded!");
+    return true;
+  }
+
+  return false;
 }
 
 // ================= WEBHOOK =================
@@ -451,17 +612,39 @@ app.post("/webhook", async (req, res) => {
 
   const { sessionId, from, text, buttonResponse } = core;
 
+  // Admin commands
+  if (isAdmin(from) && text && text.startsWith('/')) {
+    const handled = await handleAdminCommand(sessionId, from, text);
+    if (handled) return;
+  }
+
+  // Admin chatting
+  if (isAdmin(from) && text && !text.startsWith('/')) {
+    return;
+  }
+
+  // Blocked
+  if (blockedUsers.has(from)) return;
+
+  // Human mode
+  if (humanHandling.has(from)) {
+    humanHandling.set(from, Date.now());
+    return;
+  }
+
+  // Buttons
   if (buttonResponse) {
     if (buttonResponse.includes('menu')) {
       await sendMenu(sessionId, from);
       return;
     }
     if (buttonResponse.includes('human')) {
-      await escalateToHuman(sessionId, from, "Button: Talk to Human");
+      await escalateToHuman(sessionId, from);
       return;
     }
   }
 
+  // Commands
   if (text) {
     const lowerText = text.toLowerCase().trim();
 
@@ -476,16 +659,13 @@ app.post("/webhook", async (req, res) => {
     }
 
     if (lowerText === "human" || lowerText === "support" || lowerText === "help") {
-      if (!botUsers.has(from)) {
-        botUsers.add(from);
-      }
-      await escalateToHuman(sessionId, from, text);
+      if (!botUsers.has(from)) botUsers.add(from);
+      await escalateToHuman(sessionId, from);
       return;
     }
   }
 
   if (!botUsers.has(from)) return;
-
   if (!text) return;
 
   const lowerText = text.toLowerCase().trim();
@@ -495,6 +675,7 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
+  // Number selection
   const numberMatch = text.match(/^(\d+)$/);
   if (numberMatch && global.userProducts?.has(from)) {
     const index = parseInt(numberMatch[1]) - 1;
@@ -506,6 +687,7 @@ app.post("/webhook", async (req, res) => {
     }
   }
 
+  // Keyword match
   const products = await getProducts();
   if (products) {
     const match = products.find(p => 
@@ -519,21 +701,20 @@ app.post("/webhook", async (req, res) => {
     }
   }
 
-  console.log("🤖 AI Query:", text.substring(0, 40));
+  // AI
+  console.log("🤖 AI:", text.substring(0, 40));
   await logEvent(from, "AI_QUERY", null, text);
   
   const aiResponse = await askProductExpert(from, text);
   
   if (aiResponse === "ESCALATE") {
-    await escalateToHuman(sessionId, from, text);
+    await escalateToHuman(sessionId, from);
+  } else if (aiResponse === "ORDER_INFO") {
+    await sendOrderingInfo(sessionId, from);
   } else if (aiResponse) {
     await sendText(sessionId, from, aiResponse);
   } else {
-    await sendText(
-      sessionId,
-      from,
-      "Sorry, I'm having trouble. 😔\n\nType *HUMAN* to speak with our team or *MENU* to browse products!"
-    );
+    await sendText(sessionId, from, "I'm having trouble. Type *HUMAN* for support or *MENU* for products!");
   }
 });
 
@@ -542,23 +723,26 @@ app.get("/", (_, res) => {
   res.json({
     status: "online",
     service: "Snippy Mart AI Bot",
+    version: "2.0.0",
     ai: openai ? "enabled" : "disabled",
     activeUsers: botUsers.size,
-    escalated: escalatedUsers.size
+    humanHandling: humanHandling.size,
+    admins: ADMIN_NUMBERS.length
   });
 });
 
 app.post("/reload", async (req, res) => {
   await loadProductKnowledge();
-  res.json({ success: true });
+  res.json({ success: true, products: productKnowledgeBase.length });
 });
 
 // ================= START =================
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log("🚀 SNIPPY MART AI BOT - PRODUCTION");
-  console.log(`🤖 AI: ${openai ? '✅ Enabled' : '❌ Disabled (set OPENAI_API_KEY)'}`);
-  console.log(`📚 Knowledge: ${productKnowledgeBase ? '✅ Loaded' : '⌛ Loading...'}`);
-  console.log(`👤 Admin: ${ADMIN_PHONE}`);
-  console.log("✅ READY!");
+  console.log("🚀 SNIPPY MART AI BOT - PRODUCTION v2.0");
+  console.log(`📡 Port: ${PORT}`);
+  console.log(`🤖 AI: ${openai ? '✅ Enabled' : '❌ Disabled'}`);
+  console.log(`👥 Admins: ${ADMIN_NUMBERS.join(', ')}`);
+  console.log(`📚 Products: ${productKnowledgeBase ? 'Loaded ✅' : 'Loading...'}`);
+  console.log("✅ READY TO SERVE!");
 });
