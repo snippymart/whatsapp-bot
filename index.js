@@ -3,169 +3,134 @@ import express from "express";
 const app = express();
 app.use(express.json({ type: "*/*" }));
 
-/* ================= CONFIG ================= */
-
 const WASENDER_TOKEN = process.env.WASENDER_API_KEY;
-const ADMIN_NUMBER = "9477XXXXXXX"; // your number (no +)
 const SEND_URL = "https://api.wasenderapi.com/api/send-message";
+const SITE = "https://snippymart.com";
 
-// OPTIONAL
-const WEBSITE_API = "https://yourwebsite.com/api/products"; // optional
-const OPENAI_KEY = process.env.OPENAI_API_KEY; // optional
-
-/* ================= HELPERS ================= */
-
+// helper
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-async function sendMessage(sessionId, number, text) {
-  const payload = { sessionId, number, text };
-
-  const res = await fetch(SEND_URL, {
+async function send(sessionId, number, payload) {
+  await fetch(SEND_URL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${WASENDER_TOKEN}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ sessionId, number, ...payload })
   });
-
-  const out = await res.text();
-  console.log("📤 SEND:", res.status, out);
 }
 
-/* ================= PRODUCTS ================= */
-
-// LOCAL FALLBACK (used if website API fails)
-const PRODUCTS = {
-  cursor: {
-    name: "Cursor Pro",
-    triggers: ["cursor", "cursor pro"],
-    reply: `🚀 *Cursor Pro – Official Premium*
-
-✅ Works on your own account
-🔒 We NEVER ask for passwords
-⚡ Activation within 24 hours
-
-👉 Order:
-https://yourwebsite.com/cursor`
-  },
-
-  grammarly: {
-    name: "Grammarly Pro",
-    triggers: ["grammarly", "grammar"],
-    reply: `✍️ *Grammarly Pro – Official*
-
-✅ On your own account
-⚡ Fast activation
-
-👉 Order:
-https://yourwebsite.com/grammarly`
-  }
-};
-
-/* ================= AI (OPTIONAL) ================= */
-
-async function aiReply(question) {
-  if (!OPENAI_KEY) return null;
-
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a WhatsApp sales assistant. Answer briefly. Never discuss pricing unless asked. Never ask for passwords."
-        },
-        { role: "user", content: question }
-      ]
-    })
-  });
-
-  const json = await res.json();
-  return json?.choices?.[0]?.message?.content;
-}
-
-/* ================= WEBHOOK ================= */
-
+// ================= WEBHOOK =================
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
-  try {
-    const data = req.body?.data?.messages;
-    if (!data) return;
+  const msgData = req.body?.data?.messages;
+  if (!msgData) return;
 
-    const text =
-      data?.message?.conversation ||
-      data?.messageBody ||
-      "";
+  const from = msgData.cleanedSenderPn;
+  const text =
+    msgData?.message?.conversation ||
+    msgData?.messageBody ||
+    "";
 
-    const from = data?.cleanedSenderPn;
-    const sessionId = req.body?.data?.sessionId;
+  const sessionId = req.body?.data?.sessionId;
+  const message = text.toLowerCase().trim();
 
-    if (!text || !from || !sessionId) return;
+  if (!from || !sessionId) return;
 
-    console.log("📩 IN:", from, text);
+  console.log("📩", from, message);
 
-    const msg = text.toLowerCase();
+  /* ===== 1️⃣ MENU REQUEST ===== */
+  if (
+    message === "menu" ||
+    message === "hi" ||
+    message === "hello"
+  ) {
+    const products = await fetch(`${SITE}/api/whatsapp/products`)
+      .then(r => r.json());
 
-    /* ===== ADMIN ESCALATION ===== */
-    if (msg.includes("agent") || msg.includes("human")) {
-      await sendMessage(
-        sessionId,
-        from,
-        "👨‍💼 An admin will reply to you shortly."
-      );
-
-      await sendMessage(
-        sessionId,
-        ADMIN_NUMBER,
-        `⚠️ Admin needed\nFrom: ${from}\nMessage: ${text}`
-      );
+    if (!products.length) {
+      await send(sessionId, from, {
+        text: "⚠️ No products available right now."
+      });
       return;
     }
 
-    /* ===== PRODUCT MATCH ===== */
-    for (const key in PRODUCTS) {
-      const product = PRODUCTS[key];
-      if (product.triggers.some(t => msg.includes(t))) {
-        await wait(2000 + Math.random() * 3000);
-        await sendMessage(sessionId, from, product.reply);
-        return;
+    // Build WhatsApp List Message
+    await send(sessionId, from, {
+      type: "list",
+      header: { type: "text", text: "🛍️ Our Products" },
+      body: { text: "Select a product to view details:" },
+      action: {
+        button: "View Products",
+        sections: [
+          {
+            title: "Available",
+            rows: products.map(p => ({
+              id: p.id,
+              title: p.menuTitle
+            }))
+          }
+        ]
       }
-    }
+    });
 
-    /* ===== FAQ / AI FALLBACK ===== */
-    if (msg.length > 8) {
-      const ai = await aiReply(text);
-      if (ai) {
-        await wait(1500);
-        await sendMessage(sessionId, from, ai);
-        return;
-      }
-    }
-
-    /* ===== DEFAULT ===== */
-    await sendMessage(
-      sessionId,
-      from,
-      "👋 Hi! Type *CURSOR* or *GRAMMARLY* to see details."
-    );
-
-  } catch (err) {
-    console.error("❌ ERROR:", err);
+    return;
   }
+
+  /* ===== 2️⃣ PRODUCT SELECTED ===== */
+  const productId =
+    msgData?.message?.listResponseMessage?.singleSelectReply?.selectedRowId
+    || null;
+
+  if (productId) {
+    // Log product view
+    await fetch(`${SITE}/api/whatsapp/log`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        phone: from,
+        productId,
+        event: "PRODUCT_VIEW"
+      })
+    });
+
+    const flow = await fetch(
+      `${SITE}/api/whatsapp/products/${productId}`
+    ).then(r => r.json());
+
+    for (const step of flow.flowSteps) {
+      await wait(step.delayMs || 0);
+      await send(sessionId, from, {
+        text: `*${step.title}*\n\n${step.message}`
+      });
+    }
+
+    if (flow.showOrderLink) {
+      await send(sessionId, from, {
+        text: `👉 *Order on website*\n${flow.orderUrl}`
+      });
+
+      await fetch(`${SITE}/api/whatsapp/log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone: from,
+          productId,
+          event: "ORDER_CLICK"
+        })
+      });
+    }
+
+    return;
+  }
+
+  /* ===== 3️⃣ FALLBACK ===== */
+  await send(sessionId, from, {
+    text: "👋 Type *MENU* to see our products."
+  });
 });
 
-/* ================= HEALTH ================= */
-
-app.get("/", (_, res) => res.send("Webhook is live"));
-
-app.listen(process.env.PORT || 3000, () =>
-  console.log("🚀 Server running")
-);
+app.get("/", (_, res) => res.send("Webhook live"));
+app.listen(process.env.PORT || 3000);
