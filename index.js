@@ -6,7 +6,7 @@ app.use(express.json({ type: "*/*" }));
 
 // ================= CONFIG =================
 const WASENDER_SESSION_KEY = process.env.WASENDER_SESSION_KEY;
-const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || "94776512486").split(",");
+const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || "94787767869").split(",");
 const SEND_URL = "https://api.wasenderapi.com/api/send-message";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
@@ -56,114 +56,63 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
-// ================= LOAD WHATSAPP-ENABLED PRODUCTS ONLY =================
+// ================= LOAD COMPLETE PRODUCT DATA WITH VARIANTS =================
 async function loadProductKnowledge() {
   try {
-    console.log("📚 Loading WhatsApp-enabled products...");
+    console.log("📚 Loading complete product data with variants...");
     
-    const res = await fetch(
-      `https://vuffzfuklzzcnfnubtzx.supabase.co/rest/v1/whatsapp_product_config?select=*,product:products!inner(*)&enabled=eq.true`,
-      {
-        headers: {
-          apikey: SUPABASE_ANON_KEY,
-          Authorization: `Bearer ${SUPABASE_ANON_KEY}`
-        }
-      }
-    );
+    const res = await fetch(`${SUPABASE_URL}/whatsapp-products`, {
+      headers: { Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
+    });
 
     if (!res.ok) {
       console.error("❌ Failed to load products");
       return;
     }
 
-    const whatsappProducts = await res.json();
+    const products = await res.json();
     
-    if (!whatsappProducts || whatsappProducts.length === 0) {
+    if (!products || products.length === 0) {
       console.warn("⚠️ No WhatsApp-enabled products found");
       productKnowledgeBase = "No products available yet.";
       return;
     }
 
-    let knowledge = `# Snippy Mart - WhatsApp Product Catalog\n\n`;
-    knowledge += `You are a product expert for Snippy Mart. Answer ONLY about these enabled products:\n\n`;
+    let knowledge = `# Snippy Mart - Complete Product Catalog\n\n`;
+    knowledge += `Below is COMPLETE and ACCURATE product information from snippymart.com database.\n`;
+    knowledge += `You MUST use ONLY this information. DO NOT make assumptions or add details.\n\n`;
 
-    whatsappProducts.forEach((wp) => {
-      const p = wp.product;
-      
-      knowledge += `## ${p.name}\n`;
-      knowledge += `**Price**: LKR ${p.price.toLocaleString('en-US')}\n`;
-      knowledge += `**Menu Title**: ${wp.menu_title}\n`;
-      
-      if (p.description) {
-        knowledge += `**Description**: ${p.description}\n`;
-      }
-      
-      if (wp.trigger_keywords && wp.trigger_keywords.length > 0) {
-        knowledge += `**Keywords**: ${wp.trigger_keywords.join(', ')}\n`;
-      }
-      
-      const productName = p.name.toLowerCase();
-      
-      if (productName.includes('chatgpt')) {
-        knowledge += `**Type**: AI Assistant\n`;
-        knowledge += `**Requirements**: Email address only\n`;
-        knowledge += `**Includes**: GPT-4, DALL-E 3, plugins, web browsing\n`;
-        knowledge += `**Platform**: OpenAI ChatGPT\n`;
-      } else if (productName.includes('cursor')) {
-        knowledge += `**Type**: AI Code Editor\n`;
-        knowledge += `**Requirements**: Email address only\n`;
-        knowledge += `**Includes**: Unlimited AI autocomplete, chat, multi-file editing\n`;
-        knowledge += `**Platform**: Cursor IDE\n`;
-      } else if (productName.includes('claude')) {
-        knowledge += `**Type**: AI Assistant\n`;
-        knowledge += `**Requirements**: Email address only\n`;
-        knowledge += `**Includes**: Claude 3.5 Sonnet, priority access, longer context\n`;
-        knowledge += `**Platform**: Anthropic Claude\n`;
-      } else if (productName.includes('github') && productName.includes('copilot')) {
-        knowledge += `**Type**: AI Code Assistant\n`;
-        knowledge += `**Requirements**: Email + GitHub username\n`;
-        knowledge += `**Includes**: AI code suggestions, autocomplete, chat\n`;
-        knowledge += `**Platform**: GitHub Copilot\n`;
-      } else if (productName.includes('netflix')) {
-        knowledge += `**Type**: Streaming Service\n`;
-        knowledge += `**Requirements**: Email address only\n`;
-        knowledge += `**Includes**: 4K streaming, multiple profiles\n`;
-        knowledge += `**Platform**: Netflix\n`;
-      } else if (productName.includes('spotify')) {
-        knowledge += `**Type**: Music Streaming\n`;
-        knowledge += `**Requirements**: Email address only\n`;
-        knowledge += `**Includes**: Ad-free music, offline downloads\n`;
-        knowledge += `**Platform**: Spotify\n`;
-      } else {
-        knowledge += `**Type**: Digital Service\n`;
-        knowledge += `**Requirements**: Email address (additional info may be required)\n`;
-      }
-      
-      knowledge += `**Slug**: ${p.slug}\n`;
-      knowledge += `**Order Link**: https://snippymart.com/product/${p.slug}\n`;
-      knowledge += `\n---\n\n`;
+    products.forEach((product) => {
+      knowledge += product.productInfo;
+      knowledge += `\n${'='.repeat(70)}\n\n`;
     });
 
-    knowledge += `\n## General Information:\n`;
-    knowledge += `- **Currency**: All prices in Sri Lankan Rupees (LKR)\n`;
-    knowledge += `- **Delivery Time**: Within 24 hours (usually much faster)\n`;
-    knowledge += `- **Payment Methods**: Bank Transfer or Binance USDT (Card payment available via team)\n`;
-    knowledge += `- **Account Type**: Fresh activations on new accounts (no sharing)\n`;
-    knowledge += `- **Credentials**: Sent via email after payment\n`;
-    knowledge += `- **Support**: Available via WhatsApp\n`;
-    knowledge += `- **Website**: snippymart.com\n\n`;
+    knowledge += `## Store Information:\n\n`;
+    knowledge += `**Website**: snippymart.com\n`;
+    knowledge += `**Currency**: All prices in Sri Lankan Rupees (LKR)\n\n`;
+    knowledge += `**Payment Methods**:\n`;
+    knowledge += `• Bank Transfer (Available now)\n`;
+    knowledge += `• Binance USDT (Available now)\n`;
+    knowledge += `• Card Payment (Contact team for secure link)\n\n`;
+    knowledge += `**Delivery**: Digital delivery within 24 hours (usually faster)\n`;
+    knowledge += `**Account Type**: Fresh new accounts, no credential sharing\n`;
+    knowledge += `**Support**: Available via WhatsApp\n\n`;
 
-    knowledge += `## Important Rules for You:\n`;
-    knowledge += `1. ONLY mention products listed above (these are WhatsApp-enabled)\n`;
-    knowledge += `2. If asked about a product NOT listed above, say: "We don't have that available via WhatsApp currently. Type *HUMAN* to ask our team!"\n`;
-    knowledge += `3. NEVER make up features or prices\n`;
-    knowledge += `4. If you don't know something, say: "I'm not sure about that. Type *HUMAN* to speak with our team!"\n`;
-    knowledge += `5. Always use LKR for prices (never $)\n`;
-    knowledge += `6. Be honest and helpful\n`;
-    knowledge += `7. For ordering questions, direct to snippymart.com\n`;
+    knowledge += `## ⚠️ CRITICAL RULES:\n\n`;
+    knowledge += `1. **ONLY use information from above** - NEVER make assumptions\n`;
+    knowledge += `2. **Product links**: Use EXACT URLs from above (snippymart.com/product/SLUG)\n`;
+    knowledge += `3. **Prices**: Use EXACT prices from above in LKR format with commas\n`;
+    knowledge += `4. **Variants**: If product has variants, mention ALL pricing options\n`;
+    knowledge += `5. **If info missing**: Say "I don't have that detail. Type *HUMAN* for our team!"\n`;
+    knowledge += `6. **Formatting**: Use line breaks between points for readability\n`;
+    knowledge += `7. **Be honest**: "I'm not sure" is better than guessing\n`;
+    knowledge += `8. **Product not listed**: Say "We don't have that via WhatsApp. Type *HUMAN*!"\n`;
 
     productKnowledgeBase = knowledge;
-    console.log("✅ Loaded", whatsappProducts.length, "WhatsApp-enabled products");
+    console.log("✅ Loaded", products.length, "products with complete variant data");
+    
+    global.allProducts = products;
+    
   } catch (err) {
     console.error("❌ Knowledge error:", err.message);
   }
@@ -186,9 +135,7 @@ async function askProductExpert(userPhone, userMessage) {
     ];
     
     const lowerMsg = userMessage.toLowerCase();
-    const isOrderingQuestion = orderingKeywords.some(kw => lowerMsg.includes(kw));
-    
-    if (isOrderingQuestion) {
+    if (orderingKeywords.some(kw => lowerMsg.includes(kw))) {
       return "ORDER_INFO";
     }
 
@@ -210,50 +157,108 @@ async function askProductExpert(userPhone, userMessage) {
       });
     }
 
-    const conversation = conversationHistory.get(userPhone);
+    const conversation = conversationHistory.get userPhone);
     conversation.lastUpdate = Date.now();
 
     const messages = [
       {
         role: "system",
-        content: `You are a helpful product expert for Snippy Mart, a Sri Lankan digital service provider.
+        content: `You are a helpful product expert for Snippy Mart, Sri Lanka's digital service provider.
 
 ${productKnowledgeBase}
 
-## How to Order:
-When users ask about ordering/buying/payment, tell them to visit **snippymart.com** and:
-- Bank Transfer or Binance USDT available now
-- Card payment available (contact team for secure link)
+## Response Formatting Rules:
+1. **Use line breaks** between different points for easy reading
+2. **Bold** important info like prices and key features
+3. **Emojis** to make it friendly (✅ 🚀 💻 📧 💳)
+4. **Keep it organized** - one point per line when listing
+5. **Maximum 400 characters** - be concise but complete
+6. **Currency**: Always "LKR X,XXX" format (never $)
 
-## Response Guidelines:
-1. **Be Honest**: If you don't know something, admit it and suggest typing *HUMAN*
-2. **Currency**: Always use "LKR" not "$" - format like "LKR 5,000"
-3. **Only Available Products**: Answer ONLY about products listed in your catalog
-4. **Be Concise**: Keep responses under 350 characters
-5. **Be Helpful**: Use emojis, be friendly
-6. **Call-to-Action**: End with "Reply *MENU* to order!" or "Type *HUMAN* for more help!"
-7. **Never Make Up**: If unsure about features, don't guess
-8. **Payment Questions**: Direct to website with payment options
+## How to Answer Questions:
+
+**Price/Variant Questions:**
+- Check product database above
+- List ALL variant options if available
+- Use EXACT prices from database
+- If detail missing: "I don't have that info. Type *HUMAN*!"
+
+**Feature Questions:**
+- Use ONLY features listed in database
+- Don't assume or add unlisted features
+- If unsure: "For detailed features, type *HUMAN*!"
+
+**Ordering Questions:**
+- Direct to snippymart.com
+- Mention payment methods available
+- Card payment: Contact team
+
+**Product Not Listed:**
+- "We don't have that via WhatsApp. Type *HUMAN* to check!"
 
 ## Example Responses:
 
-User: "How do I buy?"
-You: "Easy! 🛍️ Visit snippymart.com and place your order. We accept Bank Transfer & Binance USDT 💳 For card payment, contact us and we'll send a secure payment link! Reply *MENU* to browse products!"
+User: "How much is Cursor Pro?"
+You: "**Cursor Pro** 💻
 
-User: "Does Cursor include GPT-4?"
-You: "Cursor has its own AI model optimized for coding! It's different from ChatGPT. For coding, Cursor is excellent 💻 LKR 3,000. Want to order? Reply *MENU*!"
+**Pricing Options:**
+- 1 Month: LKR 3,999
+- 3 Months: LKR 10,999  
+- 6 Months: LKR 19,999
 
-User: "What about Spotify?"
-You (if not in catalog): "We don't have Spotify available via WhatsApp currently. Type *HUMAN* to ask our team if it's available!"
+**Features:**
+- Unlimited AI autocomplete
+- Built-in chat
+- Multi-file editing
 
-User: "How much is ChatGPT?"
-You: "ChatGPT Plus is LKR 6,500 ✅ Includes GPT-4, DALL-E, plugins. Just need your email! Reply *MENU* to order!"
+Order at:
+snippymart.com/product/cursor-pro 🚀
 
-User: "Is it safe?"
-You: "Yes! You get your OWN fresh account with new credentials. No sharing, 100% safe ✅ Visit snippymart.com to order!"
+Reply *MENU* for more!"
 
-User: "Can I pay with card?"
-You: "Yes! 💳 For card payment, contact our team and we'll send you a secure payment link. Or use Bank Transfer/Binance now at snippymart.com! Type *HUMAN* to reach our team!"`
+User: "What's included in ChatGPT?"
+You: "**ChatGPT Plus** - LKR 6,500 ✅
+
+**Includes:**
+- GPT-4 access
+- DALL-E 3 image generation
+- Priority access
+- Plugins & web browsing
+
+**Requirements:** Email only 📧
+
+Order at:
+snippymart.com/product/chatgpt-plus
+
+Reply *MENU* for more products!"
+
+User: "Is it monthly or lifetime?"
+You: "Good question!
+
+Cursor Pro has these options:
+- 1 Month - LKR 3,999
+- 3 Months - LKR 10,999
+- 6 Months - LKR 19,999
+
+Each is a subscription for that duration.
+
+For more details, type *HUMAN*! 💬"
+
+User: "Do you have Spotify?"
+You: "Let me check...
+
+I don't see Spotify in my WhatsApp catalog. 
+
+Type *HUMAN* to ask our team if it's available through other channels!
+
+Reply *MENU* to see available products! 🎵"
+
+## Remember:
+- **Never make up** information not in database
+- **Use line breaks** between different points
+- **Be honest** when you don't know
+- **Exact URLs** from database only
+- **End with action** (MENU, HUMAN, or product link)`
       },
       ...conversation.messages.slice(-4),
       {
@@ -266,7 +271,7 @@ You: "Yes! 💳 For card payment, contact our team and we'll send you a secure p
       model: "gpt-4o-mini",
       messages: messages,
       temperature: 0.6,
-      max_tokens: 200,
+      max_tokens: 250,
     });
 
     const aiResponse = completion.choices[0].message.content;
@@ -351,12 +356,19 @@ async function sendWithButtons(sessionId, to, text, buttons) {
 // ================= API CALLS =================
 async function getProducts() {
   try {
+    if (global.allProducts && global.allProducts.length > 0) {
+      return global.allProducts;
+    }
+
     const res = await fetch(`${SUPABASE_URL}/whatsapp-products`, {
       headers: { Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
     });
+    
     if (!res.ok) return null;
     const data = await res.json();
-    return Array.isArray(data) ? data : null;
+    
+    global.allProducts = Array.isArray(data) ? data : null;
+    return global.allProducts;
   } catch {
     return null;
   }
@@ -404,7 +416,7 @@ async function sendMenu(sessionId, to) {
     menuText += `${index + 1}️⃣ ${p.menuTitle}\n`;
   });
   
-  menuText += "\n💬 *Ask me anything!*\n";
+  menuText += `\n💬 *Ask me anything!*\n`;
   menuText += "_Type *HUMAN* for support_";
 
   await sendWithButtons(sessionId, to, menuText, [
@@ -449,7 +461,7 @@ async function sendOrderingInfo(sessionId, to) {
     "1️⃣ Visit our website:\n" +
     "🌐 *snippymart.com*\n\n" +
     "2️⃣ Choose your product and checkout\n\n" +
-    "💳 *Payment Options:*\n" +
+    "💳 *Payment Options:*\n\n" +
     "✅ Bank Transfer (Available now)\n" +
     "✅ Binance USDT (Available now)\n" +
     "💳 Card Payment (Contact us for secure link)\n\n" +
@@ -692,7 +704,8 @@ app.post("/webhook", async (req, res) => {
   if (products) {
     const match = products.find(p => 
       lowerText.includes(p.id.toLowerCase()) || 
-      p.menuTitle.toLowerCase().includes(lowerText)
+      p.menuTitle.toLowerCase().includes(lowerText) ||
+      (p.triggerKeywords && p.triggerKeywords.some(kw => lowerText.includes(kw.toLowerCase())))
     );
 
     if (match) {
@@ -723,26 +736,30 @@ app.get("/", (_, res) => {
   res.json({
     status: "online",
     service: "Snippy Mart AI Bot",
-    version: "2.0.0",
+    version: "3.0.0",
     ai: openai ? "enabled" : "disabled",
     activeUsers: botUsers.size,
     humanHandling: humanHandling.size,
+    products: global.allProducts?.length || 0,
     admins: ADMIN_NUMBERS.length
   });
 });
 
 app.post("/reload", async (req, res) => {
   await loadProductKnowledge();
-  res.json({ success: true, products: productKnowledgeBase.length });
+  res.json({ 
+    success: true, 
+    products: global.allProducts?.length || 0 
+  });
 });
 
 // ================= START =================
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log("🚀 SNIPPY MART AI BOT - PRODUCTION v2.0");
+  console.log("🚀 SNIPPY MART AI BOT - PRODUCTION v3.0");
   console.log(`📡 Port: ${PORT}`);
   console.log(`🤖 AI: ${openai ? '✅ Enabled' : '❌ Disabled'}`);
   console.log(`👥 Admins: ${ADMIN_NUMBERS.join(', ')}`);
-  console.log(`📚 Products: ${productKnowledgeBase ? 'Loaded ✅' : 'Loading...'}`);
-  console.log("✅ READY TO SERVE!");
+  console.log(`📚 Products: ${global.allProducts?.length || 'Loading...'}`);
+  console.log("✅ READY!");
 });
