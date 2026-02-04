@@ -3,36 +3,77 @@ import express from "express";
 const app = express();
 app.use(express.json({ type: "*/*" }));
 
-function extractMessage(body) {
+const WASENDER_TOKEN = process.env.WASENDER_API_KEY;
+const SEND_URL = "https://api.wasenderapi.com/api/send-message";
+
+// In-memory dedup (OK for now)
+const handledMessages = new Set();
+
+function extractCore(body) {
   try {
-    // Try multiple known paths (defensive)
-    return (
-      body?.data?.messages?.message?.conversation ||
-      body?.data?.messages?.messageBody ||
-      body?.data?.messageBody ||
-      body?.messageBody ||
-      null
-    );
+    const msg = body?.data?.messages;
+    if (!msg) return null;
+
+    return {
+      id: msg.id || msg?.key?.id,
+      from: msg.cleanedSenderPn || msg?.key?.cleanedSenderPn,
+      text:
+        msg.message?.conversation ||
+        msg.messageBody ||
+        null,
+      sessionId: body.sessionId || body.data?.sessionId
+    };
   } catch {
     return null;
   }
 }
 
-app.post("/webhook", (req, res) => {
+async function sendMessage(sessionId, number, text) {
+  await fetch(SEND_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${WASENDER_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      sessionId,
+      number,
+      text
+    })
+  });
+}
+
+app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
   console.log("======================================");
-  console.log("📩 WEBHOOK RECEIVED");
+  console.log("📩 RAW WEBHOOK");
   console.log(JSON.stringify(req.body, null, 2));
 
-  const text = extractMessage(req.body);
+  const core = extractCore(req.body);
 
-  if (text) {
-    console.log("📝 EXTRACTED MESSAGE:", text);
-  } else {
-    console.log("⚠️ NO MESSAGE TEXT FOUND (still OK)");
+  if (!core || !core.id || !core.text) {
+    console.log("⚠️ Could not extract core message");
+    return;
   }
 
+  console.log("📝 EXTRACTED:", core);
+
+  // 🔒 DEDUPLICATION
+  if (handledMessages.has(core.id)) {
+    console.log("⏭️ Duplicate event ignored:", core.id);
+    return;
+  }
+  handledMessages.add(core.id);
+
+  // ✅ SINGLE SAFE REPLY
+  await sendMessage(
+    core.sessionId,
+    core.from,
+    "✅ Bot is alive. Menu coming next."
+  );
+
+  console.log("📤 Replied once to", core.id);
   console.log("======================================");
 });
 
