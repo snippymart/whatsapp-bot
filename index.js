@@ -29,19 +29,24 @@ function extractCore(body) {
 }
 
 async function sendMessage(sessionId, number, text) {
-  await fetch(SEND_URL, {
+  const res = await fetch("https://api.wasenderapi.com/api/send-message", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${WASENDER_TOKEN}`,
+      Authorization: `Bearer ${process.env.WASENDER_API_KEY}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
       sessionId,
       number,
+      type: "text",   // 🔥 REQUIRED
       text
     })
   });
+
+  const out = await res.text();
+  console.log("📤 SEND STATUS:", res.status, out);
 }
+
 
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
