@@ -3,12 +3,14 @@ import express from "express";
 const app = express();
 app.use(express.json({ type: "*/*" }));
 
-const WASENDER_TOKEN = process.env.WASENDER_API_KEY;
+// ===== CONFIG =====
+const WASENDER_SESSION_KEY = process.env.WASENDER_SESSION_KEY;
 const SEND_URL = "https://api.wasenderapi.com/api/send-message";
 
 // In-memory dedup (OK for now)
 const handledMessages = new Set();
 
+// ===== HELPERS =====
 function extractCore(body) {
   try {
     const msg = body?.data?.messages;
@@ -29,16 +31,16 @@ function extractCore(body) {
 }
 
 async function sendMessage(sessionId, number, text) {
-  const res = await fetch("https://api.wasenderapi.com/api/send-message", {
+  const res = await fetch(SEND_URL, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${process.env.WASENDER_API_KEY}`,
+      Authorization: `Bearer ${WASENDER_SESSION_KEY}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
       sessionId,
       number,
-      type: "text",   // 🔥 REQUIRED
+      type: "text", // REQUIRED
       text
     })
   });
@@ -47,12 +49,13 @@ async function sendMessage(sessionId, number, text) {
   console.log("📤 SEND STATUS:", res.status, out);
 }
 
-
+// ===== WEBHOOK =====
 app.post("/webhook", async (req, res) => {
+  // Always acknowledge
   res.sendStatus(200);
 
   console.log("======================================");
-  console.log("📩 RAW WEBHOOK");
+  console.log("📩 RAW WEBHOOK RECEIVED");
   console.log(JSON.stringify(req.body, null, 2));
 
   const core = extractCore(req.body);
@@ -64,14 +67,14 @@ app.post("/webhook", async (req, res) => {
 
   console.log("📝 EXTRACTED:", core);
 
-  // 🔒 DEDUPLICATION
+  // ===== DEDUPLICATION =====
   if (handledMessages.has(core.id)) {
     console.log("⏭️ Duplicate event ignored:", core.id);
     return;
   }
   handledMessages.add(core.id);
 
-  // ✅ SINGLE SAFE REPLY
+  // ===== SAFE REPLY =====
   await sendMessage(
     core.sessionId,
     core.from,
@@ -82,8 +85,10 @@ app.post("/webhook", async (req, res) => {
   console.log("======================================");
 });
 
+// ===== HEALTH CHECK =====
 app.get("/", (_, res) => res.send("Webhook live"));
 
-app.listen(process.env.PORT || 8080, () => {
-  console.log("🚀 SERVER LISTENING");
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+  console.log(`🚀 SERVER LISTENING ON ${PORT}`);
 });
