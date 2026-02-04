@@ -1,42 +1,43 @@
 import express from "express";
 
 const app = express();
-
-// IMPORTANT: accept ALL content types
 app.use(express.json({ type: "*/*" }));
 
-/**
- * WEBHOOK – CATCH ALL (THIS IS WHAT WORKED BEFORE)
- */
+function extractMessage(body) {
+  try {
+    // Try multiple known paths (defensive)
+    return (
+      body?.data?.messages?.message?.conversation ||
+      body?.data?.messages?.messageBody ||
+      body?.data?.messageBody ||
+      body?.messageBody ||
+      null
+    );
+  } catch {
+    return null;
+  }
+}
+
 app.post("/webhook", (req, res) => {
-  // Always respond OK immediately
   res.sendStatus(200);
 
   console.log("======================================");
-  console.log("📩 RAW WEBHOOK RECEIVED AT", new Date().toISOString());
-  console.log("HEADERS:");
-  console.log(JSON.stringify(req.headers, null, 2));
-  console.log("BODY:");
+  console.log("📩 WEBHOOK RECEIVED");
   console.log(JSON.stringify(req.body, null, 2));
+
+  const text = extractMessage(req.body);
+
+  if (text) {
+    console.log("📝 EXTRACTED MESSAGE:", text);
+  } else {
+    console.log("⚠️ NO MESSAGE TEXT FOUND (still OK)");
+  }
+
   console.log("======================================");
 });
 
-/**
- * SIMPLE TEST ROUTE (DO NOT REMOVE)
- */
-app.get("/test", (req, res) => {
-  console.log("🔥 TEST HIT");
-  res.send("Test OK");
-});
+app.get("/", (_, res) => res.send("Webhook live"));
 
-/**
- * ROOT HEALTH CHECK
- */
-app.get("/", (req, res) => {
-  res.send("Webhook live");
-});
-
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`🚀 SERVER LISTENING ON ${PORT}`);
+app.listen(process.env.PORT || 8080, () => {
+  console.log("🚀 SERVER LISTENING");
 });
