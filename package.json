@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-bot",
-  "version": "1.0.0",
-  "description": "Snippy Mart WhatsApp AI Bot",
+  "version": "3.0.0",
+  "description": "Snippy Mart WhatsApp AI Bot - With Product Variants",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -14,5 +14,7 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  }
+  },
+  "author": "Snippy Mart",
+  "license": "ISC"
 }
