@@ -7,7 +7,7 @@ app.use(express.json({ type: "*/*" }));
 const WASENDER_SESSION_KEY = process.env.WASENDER_SESSION_KEY;
 const SEND_URL = "https://api.wasenderapi.com/api/send-message";
 
-// In-memory dedup (OK for now)
+// In-memory dedup (fine for now)
 const handledMessages = new Set();
 
 // ===== HELPERS =====
@@ -39,8 +39,8 @@ async function sendMessage(sessionId, number, text) {
     },
     body: JSON.stringify({
       sessionId,
-      number,
-      type: "text", // REQUIRED
+      to: number,          // ✅ REQUIRED FIELD
+      type: "text",        // ✅ REQUIRED
       text
     })
   });
@@ -51,7 +51,6 @@ async function sendMessage(sessionId, number, text) {
 
 // ===== WEBHOOK =====
 app.post("/webhook", async (req, res) => {
-  // Always acknowledge
   res.sendStatus(200);
 
   console.log("======================================");
@@ -67,17 +66,17 @@ app.post("/webhook", async (req, res) => {
 
   console.log("📝 EXTRACTED:", core);
 
-  // ===== DEDUPLICATION =====
+  // ===== DEDUP =====
   if (handledMessages.has(core.id)) {
     console.log("⏭️ Duplicate event ignored:", core.id);
     return;
   }
   handledMessages.add(core.id);
 
-  // ===== SAFE REPLY =====
+  // ===== REPLY =====
   await sendMessage(
     core.sessionId,
-    core.from,
+    core.from,   // ✅ personal number (2486)
     "✅ Bot is alive. Menu coming next."
   );
 
@@ -85,7 +84,7 @@ app.post("/webhook", async (req, res) => {
   console.log("======================================");
 });
 
-// ===== HEALTH CHECK =====
+// ===== HEALTH =====
 app.get("/", (_, res) => res.send("Webhook live"));
 
 const PORT = process.env.PORT || 8080;
