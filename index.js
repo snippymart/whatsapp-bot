@@ -157,7 +157,7 @@ async function askProductExpert(userPhone, userMessage) {
       });
     }
 
-    const conversation = conversationHistory.get userPhone);
+    const conversation = conversationHistory.get(userPhone);
     conversation.lastUpdate = Date.now();
 
     const messages = [
@@ -231,27 +231,6 @@ Order at:
 snippymart.com/product/chatgpt-plus
 
 Reply *MENU* for more products!"
-
-User: "Is it monthly or lifetime?"
-You: "Good question!
-
-Cursor Pro has these options:
-- 1 Month - LKR 3,999
-- 3 Months - LKR 10,999
-- 6 Months - LKR 19,999
-
-Each is a subscription for that duration.
-
-For more details, type *HUMAN*! 💬"
-
-User: "Do you have Spotify?"
-You: "Let me check...
-
-I don't see Spotify in my WhatsApp catalog. 
-
-Type *HUMAN* to ask our team if it's available through other channels!
-
-Reply *MENU* to see available products! 🎵"
 
 ## Remember:
 - **Never make up** information not in database
@@ -624,27 +603,22 @@ app.post("/webhook", async (req, res) => {
 
   const { sessionId, from, text, buttonResponse } = core;
 
-  // Admin commands
   if (isAdmin(from) && text && text.startsWith('/')) {
     const handled = await handleAdminCommand(sessionId, from, text);
     if (handled) return;
   }
 
-  // Admin chatting
   if (isAdmin(from) && text && !text.startsWith('/')) {
     return;
   }
 
-  // Blocked
   if (blockedUsers.has(from)) return;
 
-  // Human mode
   if (humanHandling.has(from)) {
     humanHandling.set(from, Date.now());
     return;
   }
 
-  // Buttons
   if (buttonResponse) {
     if (buttonResponse.includes('menu')) {
       await sendMenu(sessionId, from);
@@ -656,7 +630,6 @@ app.post("/webhook", async (req, res) => {
     }
   }
 
-  // Commands
   if (text) {
     const lowerText = text.toLowerCase().trim();
 
@@ -687,7 +660,6 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
-  // Number selection
   const numberMatch = text.match(/^(\d+)$/);
   if (numberMatch && global.userProducts?.has(from)) {
     const index = parseInt(numberMatch[1]) - 1;
@@ -699,7 +671,6 @@ app.post("/webhook", async (req, res) => {
     }
   }
 
-  // Keyword match
   const products = await getProducts();
   if (products) {
     const match = products.find(p => 
@@ -714,7 +685,6 @@ app.post("/webhook", async (req, res) => {
     }
   }
 
-  // AI
   console.log("🤖 AI:", text.substring(0, 40));
   await logEvent(from, "AI_QUERY", null, text);
   
@@ -736,7 +706,7 @@ app.get("/", (_, res) => {
   res.json({
     status: "online",
     service: "Snippy Mart AI Bot",
-    version: "3.0.0",
+    version: "3.0.1",
     ai: openai ? "enabled" : "disabled",
     activeUsers: botUsers.size,
     humanHandling: humanHandling.size,
@@ -756,7 +726,7 @@ app.post("/reload", async (req, res) => {
 // ================= START =================
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log("🚀 SNIPPY MART AI BOT - PRODUCTION v3.0");
+  console.log("🚀 SNIPPY MART AI BOT - PRODUCTION v3.0.1");
   console.log(`📡 Port: ${PORT}`);
   console.log(`🤖 AI: ${openai ? '✅ Enabled' : '❌ Disabled'}`);
   console.log(`👥 Admins: ${ADMIN_NUMBERS.join(', ')}`);
