@@ -6,8 +6,9 @@ app.use(express.json({ type: "*/*" }));
 // ===== CONFIG =====
 const WASENDER_SESSION_KEY = process.env.WASENDER_SESSION_KEY;
 const SEND_URL = "https://api.wasenderapi.com/api/send-message";
+const SITE = "https://snippymart.com";
 
-// In-memory dedup (fine for now)
+// Dedup
 const handledMessages = new Set();
 
 // ===== HELPERS =====
@@ -30,23 +31,62 @@ function extractCore(body) {
   }
 }
 
-async function sendMessage(sessionId, number, text) {
+async function send(payload) {
   const res = await fetch(SEND_URL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${WASENDER_SESSION_KEY}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({
-      sessionId,
-      to: number,          // ✅ REQUIRED FIELD
-      type: "text",        // ✅ REQUIRED
-      text
-    })
+    body: JSON.stringify(payload)
   });
 
   const out = await res.text();
   console.log("📤 SEND STATUS:", res.status, out);
+}
+
+async function sendText(sessionId, to, text) {
+  return send({
+    sessionId,
+    to,
+    type: "text",
+    text
+  });
+}
+
+async function sendMenu(sessionId, to) {
+  const products = await fetch(`${SITE}/api/whatsapp/products`)
+    .then(r => r.json());
+
+  if (!products || !products.length) {
+    await sendText(sessionId, to, "⚠️ No products available right now.");
+    return;
+  }
+
+  await send({
+    sessionId,
+    to,
+    type: "list",
+    header: {
+      type: "text",
+      text: "🛍️ Our Products"
+    },
+    body: {
+      text: "Select a product to view details"
+    },
+    action: {
+      button: "View Products",
+      sections: [
+        {
+          title: "Available Products",
+          rows: products.map(p => ({
+            id: p.id,
+            title: p.menuTitle
+          }))
+        }
+      ]
+    }
+  });
 }
 
 // ===== WEBHOOK =====
@@ -54,40 +94,31 @@ app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
   console.log("======================================");
-  console.log("📩 RAW WEBHOOK RECEIVED");
+  console.log("📩 RAW WEBHOOK");
   console.log(JSON.stringify(req.body, null, 2));
 
   const core = extractCore(req.body);
-
-  if (!core || !core.id || !core.text) {
-    console.log("⚠️ Could not extract core message");
-    return;
-  }
+  if (!core || !core.id || !core.from) return;
 
   console.log("📝 EXTRACTED:", core);
 
-  // ===== DEDUP =====
+  // Dedup
   if (handledMessages.has(core.id)) {
-    console.log("⏭️ Duplicate event ignored:", core.id);
+    console.log("⏭️ Duplicate ignored:", core.id);
     return;
   }
   handledMessages.add(core.id);
 
-  // ===== REPLY =====
-  await sendMessage(
-    core.sessionId,
-    core.from,   // ✅ personal number (2486)
-    "✅ Bot is alive. Menu coming next."
-  );
+  // 🚀 SEND PRODUCT MENU
+  await sendMenu(core.sessionId, core.from);
 
-  console.log("📤 Replied once to", core.id);
+  console.log("📤 Menu sent to", core.from);
   console.log("======================================");
 });
 
-// ===== HEALTH =====
+// Health
 app.get("/", (_, res) => res.send("Webhook live"));
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`🚀 SERVER LISTENING ON ${PORT}`);
+app.listen(process.env.PORT || 8080, () => {
+  console.log("🚀 SERVER LISTENING");
 });
