@@ -1,5 +1,4 @@
 import express from "express";
-import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
@@ -19,19 +18,15 @@ app.post("/webhook", async (req, res) => {
 
     if (!msg || !from) return;
 
-    // TRIGGER MODE (developer-safe)
     const text = msg.toLowerCase();
     const triggers = ["cursor", "price", "details", "cursor_pro"];
 
-    if (!triggers.some(t => text.includes(t))) {
-      return; // stay silent for non-triggers
-    }
+    if (!triggers.some(t => text.includes(t))) return;
 
-    // simulate typing delay
+    // typing delay
     const delayMs = 2000 + Math.floor(Math.random() * 3000);
     await wait(delayMs);
 
-    // send reply
     await fetch(SEND_URL, {
       method: "POST",
       headers: {
