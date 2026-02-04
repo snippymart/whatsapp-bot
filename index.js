@@ -11,9 +11,9 @@ const SEND_URL = "https://api.wasenderapi.com/api/send-message";
 const SUPABASE_URL = "https://vuffzfuklzzcnfnubtzx.supabase.co/functions/v1";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ1ZmZ6ZnVrbHp6Y25mbnVidHp4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg2OTQ1NjAsImV4cCI6MjA4NDI3MDU2MH0.qHjJYOrNi1cBYPYapmHMJgDxsI50sHAKUAvv0VnPQFM";
 
-// ⭐ NEW: Opt-in users only (prevents interfering with sales)
-const botUsers = new Set(); // Users who activated bot mode
-const handledMessages = new Map(); // messageId -> timestamp
+// Opt-in users only
+const botUsers = new Set();
+const handledMessages = new Map();
 
 // Auto-cleanup old messages every 5 minutes
 setInterval(() => {
@@ -148,33 +148,25 @@ async function sendMenu(sessionId, to) {
     return;
   }
 
-  const success = await send({
-    sessionId,
-    to,
-    type: "list",
-    header: {
-      type: "text",
-      text: "🛍️ Snippy Mart Products"
-    },
-    body: {
-      text: "Select a product to view details and pricing 👇\n\n_Type *STOP* to exit bot mode_"
-    },
-    action: {
-      button: "View Products",
-      sections: [
-        {
-          title: "Available Products",
-          rows: products.map(p => ({
-            id: p.id,
-            title: p.menuTitle
-          }))
-        }
-      ]
-    }
+  // Build text-based menu (more reliable than list)
+  let menuText = "🛍️ *Snippy Mart Products*\n\n";
+  menuText += "Reply with the number to view details:\n\n";
+  
+  products.forEach((p, index) => {
+    menuText += `${index + 1}. ${p.menuTitle}\n`;
   });
+  
+  menuText += "\n_Or type *STOP* to exit bot mode_";
+
+  const success = await sendText(sessionId, to, menuText);
 
   if (success) {
     await logEvent(to, "MENU_REQUEST", null, "menu");
+    
+    // Store products for this user
+    if (!global.userProducts) global.userProducts = new Map();
+    global.userProducts.set(to, products);
+    
     console.log("✅ Product menu sent to", to);
   }
 }
@@ -220,7 +212,6 @@ async function sendProductFlow(sessionId, to, productId) {
   console.log("✅ Product flow sent:", productId);
 }
 
-// ⭐ NEW: Activation message
 async function activateBot(sessionId, to) {
   botUsers.add(to);
   await sendText(
@@ -231,9 +222,11 @@ async function activateBot(sessionId, to) {
   console.log("✅ Bot activated for:", to);
 }
 
-// ⭐ NEW: Deactivation message
 async function deactivateBot(sessionId, to) {
   botUsers.delete(to);
+  if (global.userProducts) {
+    global.userProducts.delete(to);
+  }
   await sendText(
     sessionId,
     to,
@@ -255,7 +248,7 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
-  // ⭐ IGNORE OUTGOING MESSAGES (from you)
+  // Ignore outgoing messages
   if (core.fromMe) {
     console.log("⏭️ Skipping outgoing message");
     return;
@@ -268,11 +261,11 @@ app.post("/webhook", async (req, res) => {
     listReply: core.listReplyId
   });
 
-  // ⭐ IMPROVED DEDUPLICATION
+  // Improved deduplication
   const now = Date.now();
   if (handledMessages.has(core.id)) {
     const age = now - handledMessages.get(core.id);
-    if (age < 60000) { // Only dedupe within 1 minute
+    if (age < 60000) {
       console.log("⏭️ Duplicate ignored (too recent)");
       return;
     }
@@ -281,24 +274,24 @@ app.post("/webhook", async (req, res) => {
 
   const { sessionId, from, text, listReplyId } = core;
 
-  // ⭐ CHECK: Activation keyword (SNIPPY or BOT)
+  // Check activation/deactivation keywords
   if (text) {
     const lowerText = text.toLowerCase().trim();
 
-    // Activation keywords
+    // Activation
     if (lowerText === "snippy" || lowerText === "bot" || lowerText === "start") {
       await activateBot(sessionId, from);
       return;
     }
 
-    // Deactivation keyword
+    // Deactivation
     if (lowerText === "stop" || lowerText === "exit" || lowerText === "quit") {
       await deactivateBot(sessionId, from);
       return;
     }
   }
 
-  // ⭐ CHECK: Is user in bot mode?
+  // Check if user is in bot mode
   if (!botUsers.has(from)) {
     console.log("⏭️ User not in bot mode, ignoring");
     return;
@@ -306,7 +299,7 @@ app.post("/webhook", async (req, res) => {
 
   console.log("✅ User in bot mode, processing...");
 
-  // Handle list reply (user selected product from menu)
+  // Handle list reply
   if (listReplyId) {
     console.log("🎯 User selected product:", listReplyId);
     await sendProductFlow(sessionId, from, listReplyId);
@@ -327,6 +320,20 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
+  // Check if user replied with a number (from text menu)
+  const numberMatch = text.match(/^(\d+)$/);
+  if (numberMatch && global.userProducts && global.userProducts.has(from)) {
+    const index = parseInt(numberMatch[1]) - 1;
+    const userProductList = global.userProducts.get(from);
+    
+    if (index >= 0 && index < userProductList.length) {
+      const selectedProduct = userProductList[index];
+      console.log("🎯 User selected by number:", selectedProduct.id);
+      await sendProductFlow(sessionId, from, selectedProduct.id);
+      return;
+    }
+  }
+
   // Try to match product by keyword
   const products = await getProducts();
   if (products) {
@@ -342,7 +349,7 @@ app.post("/webhook", async (req, res) => {
     }
   }
 
-  // Fallback - didn't understand
+  // Fallback
   await sendText(
     sessionId,
     from,
