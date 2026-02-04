@@ -55,10 +55,19 @@ async function sendText(sessionId, to, text) {
 }
 
 async function sendMenu(sessionId, to) {
-  const products = await fetch(`${SITE}/api/whatsapp/products`)
-    .then(r => r.json());
+  const res = await fetch(`${API_BASE}/products`);
+  const text = await res.text();
 
-  if (!products || !products.length) {
+  let products;
+  try {
+    products = JSON.parse(text);
+  } catch {
+    console.error("❌ Invalid JSON from products API:", text.slice(0, 200));
+    await sendText(sessionId, to, "⚠️ Menu temporarily unavailable.");
+    return;
+  }
+
+  if (!Array.isArray(products) || products.length === 0) {
     await sendText(sessionId, to, "⚠️ No products available right now.");
     return;
   }
@@ -87,6 +96,8 @@ async function sendMenu(sessionId, to) {
       ]
     }
   });
+
+  console.log("📤 Product menu sent");
 }
 
 // ===== WEBHOOK =====
