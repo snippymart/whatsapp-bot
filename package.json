@@ -1,20 +1,20 @@
 {
-  "name": "snippy-mart-whatsapp-bot",
-  "version": "3.0.1",
-  "description": "Snippy Mart WhatsApp AI Bot with Product Variants",
-  "main": "index.js",
-  "type": "module",
-  "scripts": {
-    "start": "node index.js",
-    "dev": "node index.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "openai": "^4.28.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "author": "Snippy Mart",
-  "license": "ISC"
+    "name": "snippy-mart-whatsapp-bot",
+    "version": "4.0.0",
+    "description": "Snippy Mart WhatsApp Bot with Business Hours Enforcement",
+    "main": "index.js",
+    "type": "module",
+    "scripts": {
+        "start": "node index.js",
+        "dev": "node index.js"
+    },
+    "dependencies": {
+        "express": "^4.18.2",
+        "openai": "^4.28.0"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    },
+    "author": "Snippy Mart",
+    "license": "ISC"
 }
