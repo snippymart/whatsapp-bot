@@ -4,7 +4,9 @@ import OpenAI from "openai";
 const app = express();
 app.use(express.json({ type: "*/*" }));
 
-// ================= CONFIG =================
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
 const WASENDER_SESSION_KEY = process.env.WASENDER_SESSION_KEY;
 const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || "94787767869").split(",");
 const SEND_URL = "https://api.wasenderapi.com/api/send-message";
@@ -14,194 +16,195 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SUPABASE_URL = "https://vuffzfuklzzcnfnubtzx.supabase.co/functions/v1";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ1ZmZ6ZnVrbHp6Y25mbnVidHp4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg2OTQ1NjAsImV4cCI6MjA4NDI3MDU2MH0.qHjJYOrNi1cBYPYapmHMJgDxsI50sHAKUAvv0VnPQFM";
 
-// Initialize OpenAI
+// OpenAI
 let openai = null;
 if (OPENAI_API_KEY) {
     openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 }
 
-// State
+// ============================================================================
+// STATE MANAGEMENT
+// ============================================================================
 const botUsers = new Set();
 const handledMessages = new Map();
 const conversationHistory = new Map();
 const humanHandling = new Map();
 const blockedUsers = new Set();
+const autoRepliedUsers = new Map(); // Track who got auto-reply in current offline window
 let productKnowledgeBase = "";
+let currentBusinessHoursState = null; // Track current business hours window
+
+// ============================================================================
+// BUSINESS HOURS LOGIC
+// ============================================================================
+function isWithinBusinessHours() {
+    const now = new Date();
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    const currentTime = hours * 60 + minutes; // Convert to minutes since midnight
+
+    // Business hours: 4:00 PM – 6:00 PM (16:00 - 18:00) and 8:00 PM – 10:00 PM (20:00 - 22:00)
+    const slot1Start = 16 * 60; // 4:00 PM
+    const slot1End = 18 * 60;   // 6:00 PM
+    const slot2Start = 20 * 60; // 8:00 PM
+    const slot2End = 22 * 60;   // 10:00 PM
+
+    const isOnline = (currentTime >= slot1Start && currentTime < slot1End) ||
+        (currentTime >= slot2Start && currentTime < slot2End);
+
+    return isOnline;
+}
+
+function getCurrentBusinessWindow() {
+    const now = new Date();
+    const hours = now.getHours();
+
+    if (hours >= 16 && hours < 18) return "slot1";
+    if (hours >= 20 && hours < 22) return "slot2";
+    return "offline";
+}
+
+// Reset auto-reply tracking when business hours change
+function checkAndResetAutoReplies() {
+    const currentWindow = getCurrentBusinessWindow();
+
+    if (currentWindow !== currentBusinessHoursState) {
+        if (currentWindow !== "offline") {
+            // Business hours started - clear all auto-reply flags
+            autoRepliedUsers.clear();
+            console.log(`✅ Business hours started (${currentWindow}). Auto-reply tracking reset.`);
+        }
+        currentBusinessHoursState = currentWindow;
+    }
+}
+
+// Check every minute
+setInterval(checkAndResetAutoReplies, 60000);
 
 function isAdmin(phone) {
     return ADMIN_NUMBERS.includes(phone);
 }
 
-// Auto-cleanup
+// ============================================================================
+// AUTO-CLEANUP
+// ============================================================================
 setInterval(() => {
-    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+    const now = Date.now();
+
+    // Clear handled messages older than 5 minutes
     for (const [msgId, timestamp] of handledMessages.entries()) {
-        if (timestamp < fiveMinutesAgo) {
-            handledMessages.delete(msgId);
-        }
+        if (now - timestamp > 300000) handledMessages.delete(msgId);
     }
 
-    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    // Clear conversation history older than 1 hour
     for (const [user, history] of conversationHistory.entries()) {
-        if (history.lastUpdate < oneHourAgo) {
-            conversationHistory.delete(user);
-        }
+        if (now - history.lastUpdate > 3600000) conversationHistory.delete(user);
     }
 
-    const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
+    // Clear human handling older than 2 hours
     for (const [user, timestamp] of humanHandling.entries()) {
-        if (timestamp < twoHoursAgo) {
-            humanHandling.delete(user);
-        }
+        if (now - timestamp > 7200000) humanHandling.delete(user);
     }
-}, 5 * 60 * 1000);
+}, 300000);
 
-// ================= LOAD COMPLETE PRODUCT DATA =================
+// ============================================================================
+// PRODUCT KNOWLEDGE SYNC
+// ============================================================================
 async function loadProductKnowledge() {
     try {
-        console.log("📚 Loading complete product data from database...");
+        console.log("📚 Loading product data from Supabase...");
 
         const res = await fetch(`${SUPABASE_URL}/whatsapp-products`, {
             headers: { Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
         });
 
-        if (!res.ok) {
-            console.error("❌ Failed to load products");
-            return;
-        }
+        if (!res.ok) throw new Error("Failed to fetch products");
 
         const products = await res.json();
 
         if (!products || products.length === 0) {
-            console.warn("⚠️ No WhatsApp-enabled products found");
-            productKnowledgeBase = "No products available yet.";
+            productKnowledgeBase = "No products available.";
             return;
         }
 
-        let knowledge = `# Snippy Mart - Complete Product Catalog\n\n`;
-        knowledge += `Below is COMPLETE and ACCURATE product information from snippymart.com database.\n`;
-        knowledge += `You MUST use ONLY this information. DO NOT make assumptions or add details.\n\n`;
+        let knowledge = `# SNIPPY MART PRODUCT CATALOG\n\n`;
+        knowledge += `**STRICT RULES**: ONLY use LKR. NEVER use $. NEVER guess prices.\n\n`;
 
-        products.forEach((product) => {
-            knowledge += product.productInfo;
+        products.forEach((p) => {
+            knowledge += p.productInfo;
             knowledge += `\n${'='.repeat(70)}\n\n`;
         });
 
-        knowledge += `## Store Information:\n\n`;
-        knowledge += `**Website**: snippymart.com\n`;
-        knowledge += `**Currency**: All prices in Sri Lankan Rupees (LKR)\n\n`;
-        knowledge += `**Payment Methods**:\n`;
-        knowledge += `• Bank Transfer (Instant)\n`;
-        knowledge += `• Binance USDT (Instant)\n`;
-        knowledge += `• Card Payment (Type *HUMAN* for secure link)\n\n`;
-        knowledge += `**Delivery**: Digital delivery within 24 hours\n`;
-        knowledge += `**Account Type**: Fresh new accounts\n`;
-        knowledge += `**Support**: Available via WhatsApp\n\n`;
-
-        knowledge += `## ⚠️ CRITICAL RULES:\n\n`;
-        knowledge += `1. **ONLY use information from above** - NEVER make assumptions or guess prices\n`;
-        knowledge += `2. **Product links**: Use EXACT URLs (snippymart.com/products/slug)\n`;
-        knowledge += `3. **Prices**: ALWAYS use exact prices from database (e.g. LKR 6,999)\n`;
-        knowledge += `4. **Variants**: Mention ALL pricing options listed for a product\n`;
-        knowledge += `5. **If info missing**: Say "I don't have that detail. Type *HUMAN* for live support!"\n`;
-        knowledge += `6. **Honesty**: It is better to say "I don't know" than to give fake prices.\n`;
+        knowledge += `## Store Information\n\n`;
+        knowledge += `**Website**: https://snippymart.com\n`;
+        knowledge += `**Currency**: Sri Lankan Rupees (LKR) ONLY\n`;
+        knowledge += `**Payment**: Bank Transfer, Binance USDT (instant)\n`;
+        knowledge += `**Card Payment**: User must type *HUMAN* for secure link\n`;
+        knowledge += `**Delivery**: Digital delivery within 24 hours\n\n`;
 
         productKnowledgeBase = knowledge;
-        console.log("✅ Loaded", products.length, "products successfully");
-
         global.allProducts = products;
 
+        console.log(`✅ Loaded ${products.length} products`);
     } catch (err) {
-        console.error("❌ Knowledge error:", err.message);
+        console.error("❌ Product sync error:", err.message);
     }
 }
 
 loadProductKnowledge();
 
-// ================= AI EXPERT =================
+// ============================================================================
+// AI EXPERT
+// ============================================================================
 async function askProductExpert(userPhone, userMessage) {
-    if (!openai) {
-        return "I'm in basic mode. Type *MENU* for products or *HUMAN* for support!";
-    }
+    if (!openai) return "I'm in basic mode. Type *MENU* for products!";
 
     try {
-        const orderingKeywords = [
-            'how to buy', 'how to order', 'how to purchase', 'how do i buy',
-            'how can i order', 'payment', 'pay', 'checkout', 'card payment',
-            'credit card', 'debit card', 'buy this', 'want to buy',
-            'place order', 'how to get', 'payment methods', 'how can i pay'
-        ];
-
         const lowerMsg = userMessage.toLowerCase();
-        if (orderingKeywords.some(kw => lowerMsg.includes(kw))) {
-            return "ORDER_INFO";
-        }
 
-        const escalationKeywords = [
-            'human', 'person', 'talk to someone', 'speak to',
-            'representative', 'agent', 'support', 'help me',
-            'contact', 'admin', 'manager', 'real person'
-        ];
-
-        if (escalationKeywords.some(kw => lowerMsg.includes(kw))) {
-            return "ESCALATE";
-        }
+        // Quick intent detection
+        if (['human', 'support', 'help', 'person'].some(k => lowerMsg.includes(k))) return "ESCALATE";
+        if (['buy', 'order', 'pay', 'checkout'].some(k => lowerMsg.includes(k))) return "ORDER_INFO";
 
         if (!conversationHistory.has(userPhone)) {
-            conversationHistory.set(userPhone, {
-                messages: [],
-                lastUpdate: Date.now()
-            });
+            conversationHistory.set(userPhone, { messages: [], lastUpdate: Date.now() });
         }
 
         const conversation = conversationHistory.get(userPhone);
         conversation.lastUpdate = Date.now();
 
-        const messages = [
-            {
-                role: "system",
-                content: `You are a helpful product expert for Snippy Mart, Sri Lanka.
+        const systemPrompt = `You are the Snippy Mart Product Expert.
 
 ${productKnowledgeBase}
 
-## Response Formatting:
-1. **Bold** prices and key features.
-2. **Use line breaks** for readability.
-3. **Emojis** (✅ 🚀 💻 💳) keep it friendly.
+**CRITICAL RULES**:
+1. If a price/feature is NOT in the database above, say "I don't have that info. Type *HUMAN*!"
+2. NEVER use $ - ONLY LKR
+3. NEVER guess or hallucinate prices
+4. Use URLs: snippymart.com/products/slug
+5. Payment: Bank/Binance instant, Card needs *HUMAN*
 
-## Rules:
-- **Pricing**: Use EXACT prices from the database above. NEVER guestimate.
-- **URLs**: Use snippymart.com/products/SLUG format.
-- **Payment**: Bank Transfer & Binance USDT are instant. For Card Payment, user MUST type *HUMAN* to get a link.
+**Style**: Professional, use **bold**, emojis (✅🚀💻), line breaks for clarity.`;
 
-## Example Responses:
-
-User: "How much is Cursor Pro?"
-You: "**Cursor Pro** 💻
-
-**Pricing Options:**
-(List the options exactly as shown in database)
-
-Order here:
-snippymart.com/products/cursor-pro 🚀
-
-Reply *MENU* for more!"`
-            },
+        const messages = [
+            { role: "system", content: systemPrompt },
             ...conversation.messages.slice(-4),
-            {
-                role: "user",
-                content: userMessage
-            }
+            { role: "user", content: userMessage }
         ];
 
         const completion = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: messages,
-            temperature: 0.5,
+            temperature: 0.3,
             max_tokens: 300,
         });
 
-        const aiResponse = completion.choices[0].message.content;
+        let aiResponse = completion.choices[0].message.content;
+
+        // Anti-hallucination check
+        if (aiResponse.includes("$") && !productKnowledgeBase.includes("$")) {
+            return "I don't have exact pricing for that. Type *HUMAN* for our team! ✅";
+        }
 
         conversation.messages.push(
             { role: "user", content: userMessage },
@@ -219,466 +222,432 @@ Reply *MENU* for more!"`
     }
 }
 
-// ... rest of the code is same as previous version (helpers, webhooks, etc.) ...
-
-// ================= HELPERS =================
+// ============================================================================
+// WHATSAPP API HELPERS
+// ============================================================================
 function extractCore(body) {
-  try {
-    const msg = body?.data?.messages;
-    if (!msg) return null;
-
-    return {
-      id: msg.id || msg?.key?.id,
-      from: msg.cleanedSenderPn || msg?.key?.cleanedSenderPn,
-      text: msg.message?.conversation || msg.messageBody || null,
-      sessionId: body.sessionId || body.data?.sessionId,
-      buttonResponse: msg.message?.buttonsResponseMessage?.selectedButtonId || null,
-      fromMe: msg.key?.fromMe || msg.fromMe || false
-    };
-  } catch {
-    return null;
-  }
+    try {
+        const msg = body?.data?.messages;
+        if (!msg) return null;
+        return {
+            id: msg.id || msg?.key?.id,
+            from: msg.cleanedSenderPn || msg?.key?.cleanedSenderPn,
+            text: msg.message?.conversation || msg.messageBody || null,
+            sessionId: body.sessionId || body.data?.sessionId,
+            buttonResponse: msg.message?.buttonsResponseMessage?.selectedButtonId || null,
+            fromMe: msg.key?.fromMe || msg.fromMe || false
+        };
+    } catch { return null; }
 }
 
 async function send(payload) {
-  const res = await fetch(SEND_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${WASENDER_SESSION_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(payload)
-  });
-
-  return res.ok;
+    try {
+        const res = await fetch(SEND_URL, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${WASENDER_SESSION_KEY}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+        return res.ok;
+    } catch { return false; }
 }
 
 async function sendText(sessionId, to, text) {
-  return send({
-    sessionId,
-    to,
-    type: "text",
-    text
-  });
+    return send({ sessionId, to, type: "text", text });
 }
 
 async function sendWithButtons(sessionId, to, text, buttons) {
-  const success = await send({
-    sessionId,
-    to,
-    type: "buttons",
-    text: text,
-    buttons: buttons.map((btn, idx) => ({
-      id: `btn_${idx}_${btn.id}`,
-      text: btn.text
-    }))
-  });
-  
-  if (!success) {
-    await sendText(sessionId, to, text);
-  }
-  
-  return success;
+    const success = await send({
+        sessionId, to, type: "buttons", text,
+        buttons: buttons.map((btn, idx) => ({ id: `btn_${idx}_${btn.id}`, text: btn.text }))
+    });
+    if (!success) await sendText(sessionId, to, text);
+    return success;
 }
 
-// ================= API CALLS =================
-async function getProducts() {
-  try {
-    if (global.allProducts && global.allProducts.length > 0) {
-      return global.allProducts;
+// ============================================================================
+// AUTO-REPLY SYSTEM (BUSINESS HOURS ENFORCEMENT)
+// ============================================================================
+async function sendOfflineAutoReply(sessionId, from) {
+    // Check if already sent auto-reply in this offline window
+    if (autoRepliedUsers.has(from)) {
+        console.log(`⏭️ Skipping auto-reply for ${from} - already sent in this window`);
+        return false;
     }
 
-    const res = await fetch(`${SUPABASE_URL}/whatsapp-products`, {
-      headers: { Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
-    });
-    
-    if (!res.ok) return null;
-    const data = await res.json();
-    
-    global.allProducts = Array.isArray(data) ? data : null;
-    return global.allProducts;
-  } catch {
-    return null;
-  }
+    const autoReplyMessage = `Hi 👋
+
+Thanks for reaching out.
+
+We're currently *offline* and operate strictly during fixed support hours to ensure quality service.
+
+🕓 *Support Hours:*
+• 4:00 PM – 6:00 PM
+• 8:00 PM – 10:00 PM
+
+Messages sent outside these hours will be reviewed during the next available slot.
+Repeated messages won't speed up responses.
+
+🛒 *To place new orders, please visit:*
+https://snippymart.com
+
+🤖 *For service details, FAQs, and instant answers, please use the AI Chat on our website* — it's available 24/7 and explains everything clearly.
+
+Thank you for your patience.`;
+
+    const success = await sendText(sessionId, from, autoReplyMessage);
+
+    if (success) {
+        autoRepliedUsers.set(from, Date.now());
+        console.log(`✅ Auto-reply sent to ${from}`);
+    }
+
+    return success;
 }
 
-async function getProductFlow(productId) {
-  try {
-    const res = await fetch(
-      `${SUPABASE_URL}/whatsapp-product-flow?id=${productId}`,
-      { headers: { Authorization: `Bearer ${SUPABASE_ANON_KEY}` } }
-    );
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-async function logEvent(phone, event, productId = null, message = null) {
-  try {
-    await fetch(`${SUPABASE_URL}/whatsapp-log`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ phone, event, productId, message })
-    });
-  } catch {}
-}
-
-// ================= BOT ACTIONS =================
+// ============================================================================
+// BOT ACTIONS
+// ============================================================================
 async function sendMenu(sessionId, to) {
-  const products = await getProducts();
+    if (!global.allProducts || global.allProducts.length === 0) await loadProductKnowledge();
+    const products = global.allProducts;
 
-  if (!products || products.length === 0) {
-    await sendText(sessionId, to, "⚠️ No products available. Type *HUMAN* for support.");
-    return;
-  }
-
-  let menuText = "🛍️ *Snippy Mart Products*\n\n";
-  menuText += "_Reply with number to view:_\n\n";
-  
-  products.forEach((p, index) => {
-    menuText += `${index + 1}️⃣ ${p.menuTitle}\n`;
-  });
-  
-  menuText += `\n💬 *Ask me anything!*\n`;
-  menuText += "_Type *HUMAN* for support_";
-
-  await sendWithButtons(sessionId, to, menuText, [
-    { id: "human", text: "💬 Talk to Team" }
-  ]);
-
-  await logEvent(to, "MENU_REQUEST");
-  if (!global.userProducts) global.userProducts = new Map();
-  global.userProducts.set(to, products);
-}
-
-async function sendProductFlow(sessionId, to, productId) {
-  const flow = await getProductFlow(productId);
-  if (!flow) {
-    await sendText(sessionId, to, "⚠️ Product not found. Type *MENU* to try again.");
-    return;
-  }
-
-  await logEvent(to, "PRODUCT_VIEW", productId);
-
-  for (const step of flow.flowSteps) {
-    await sendText(sessionId, to, `*${step.title}*\n\n${step.message}`);
-    if (step.delayMs > 0) {
-      await new Promise(resolve => setTimeout(resolve, step.delayMs));
+    if (!products || products.length === 0) {
+        return sendText(sessionId, to, "⚠️ Catalog updating. Type *HUMAN* for help!");
     }
-  }
 
-  if (flow.showOrderLink && flow.orderUrl) {
-    await sendWithButtons(sessionId, to, 
-      `👉 *Order Now*\n${flow.orderUrl}\n\n_Questions? Just ask!_`, 
-      [
-        { id: "menu", text: "🛍️ More Products" },
-        { id: "human", text: "💬 Talk to Team" }
-      ]
-    );
-    await logEvent(to, "ORDER_CLICK", productId);
-  }
-}
+    let menuText = "🛍️ *Snippy Mart - Product Catalog*\n\n";
+    menuText += "_Reply with number to view:_\n\n";
 
-async function sendOrderingInfo(sessionId, to) {
-  const orderMsg = "🛍️ *How to Order on Snippy Mart*\n\n" +
-    "1️⃣ Visit our website:\n" +
-    "🌐 *snippymart.com*\n\n" +
-    "2️⃣ Choose your product and checkout\n\n" +
-    "💳 *Payment Options:*\n\n" +
-    "✅ Bank Transfer (Available now)\n" +
-    "✅ Binance USDT (Available now)\n" +
-    "💳 Card Payment (Contact us for secure link)\n\n" +
-    "_For card payment, type *HUMAN* and our team will send you a secure payment link!_\n\n" +
-    "Reply *MENU* to browse products! 🚀";
-  
-  await sendWithButtons(sessionId, to, orderMsg, [
-    { id: "menu", text: "🛍️ View Products" },
-    { id: "human", text: "💬 Card Payment" }
-  ]);
+    products.forEach((p, index) => {
+        menuText += `${index + 1}️⃣ ${p.menuTitle}\n`;
+    });
+
+    menuText += `\n💬 *Ask me anything!*\n`;
+    menuText += "_Type *HUMAN* for support_";
+
+    await sendWithButtons(sessionId, to, menuText, [{ id: "human", text: "💬 Talk to Team" }]);
+
+    if (!global.userProducts) global.userProducts = new Map();
+    global.userProducts.set(to, products);
 }
 
 async function escalateToHuman(sessionId, to) {
-  humanHandling.set(to, Date.now());
-  
-  await sendText(
-    sessionId,
-    to,
-    "👤 *Connecting to support...*\n\n" +
-    "✅ Our team will respond shortly.\n\n" +
-    "_Feel free to continue chatting!_"
-  );
+    humanHandling.set(to, Date.now());
 
-  await logEvent(to, "ESCALATION");
-  console.log("🆘 Escalated:", to);
+    await sendText(sessionId, to,
+        "👤 *Connecting to support...*\n\n" +
+        "✅ Our team will respond shortly.\n\n" +
+        "_Feel free to continue chatting!_"
+    );
+
+    console.log("🆘 Escalated:", to);
 }
 
 async function activateBot(sessionId, to) {
-  botUsers.add(to);
-  humanHandling.delete(to);
-  
-  const welcomeMsg = "🤖 *Snippy Mart AI Assistant*\n\n" +
-    "✅ I'm here to help!\n\n" +
-    "💬 *Ask me about:*\n" +
-    "• Products & features\n" +
-    "• Pricing (LKR)\n" +
-    "• Requirements & delivery\n" +
-    "• How to order\n\n" +
-    "📱 *Commands:*\n" +
-    "• *MENU* - Browse products\n" +
-    "• *HUMAN* - Talk to team\n" +
-    "• *STOP* - Exit bot";
+    botUsers.add(to);
+    humanHandling.delete(to);
 
-  await sendWithButtons(sessionId, to, welcomeMsg, [
-    { id: "menu", text: "🛍️ Products" },
-    { id: "human", text: "💬 Support" }
-  ]);
+    const welcomeMsg = "🤖 *Snippy Mart AI Assistant*\n\n" +
+        "✅ I'm here to help!\n\n" +
+        "💬 *Ask me about:*\n" +
+        "• Products & features\n" +
+        "• Pricing (LKR)\n" +
+        "• Requirements & delivery\n" +
+        "• How to order\n\n" +
+        "📱 *Commands:*\n" +
+        "• *MENU* - Browse products\n" +
+        "• *HUMAN* - Talk to team\n" +
+        "• *STOP* - Exit bot";
 
-  console.log("✅ Activated:", to);
+    await sendWithButtons(sessionId, to, welcomeMsg, [
+        { id: "menu", text: "🛍️ Products" },
+        { id: "human", text: "💬 Support" }
+    ]);
+
+    console.log("✅ Activated:", to);
 }
 
 async function deactivateBot(sessionId, to) {
-  botUsers.delete(to);
-  humanHandling.delete(to);
-  conversationHistory.delete(to);
-  if (global.userProducts) global.userProducts.delete(to);
-  
-  await sendText(sessionId, to, "👋 *Bot Deactivated*\n\n_Send *SNIPPY* to reactivate_");
-  console.log("✅ Deactivated:", to);
+    botUsers.delete(to);
+    humanHandling.delete(to);
+    conversationHistory.delete(to);
+    if (global.userProducts) global.userProducts.delete(to);
+
+    await sendText(sessionId, to, "👋 *Bot Deactivated*\n\n_Send *SNIPPY* to reactivate_");
+    console.log("✅ Deactivated:", to);
 }
 
-// ================= ADMIN COMMANDS =================
+// ============================================================================
+// ADMIN COMMANDS
+// ============================================================================
 async function handleAdminCommand(sessionId, from, text) {
-  const cmd = text.toLowerCase().trim();
+    const cmd = text.toLowerCase().trim();
+    const parts = text.split(' ');
 
-  if (cmd.startsWith('/resume ')) {
-    const targetPhone = cmd.split(' ')[1];
-    humanHandling.delete(targetPhone);
-    await sendText(sessionId, from, `✅ Bot resumed for ${targetPhone}`);
-    await sendText(sessionId, targetPhone, "🤖 *Bot resumed!* Reply *MENU* for products!");
-    return true;
-  }
-
-  if (cmd.startsWith('/block ')) {
-    const targetPhone = cmd.split(' ')[1];
-    blockedUsers.add(targetPhone);
-    botUsers.delete(targetPhone);
-    await sendText(sessionId, from, `🚫 Blocked ${targetPhone}`);
-    return true;
-  }
-
-  if (cmd.startsWith('/unblock ')) {
-    const targetPhone = cmd.split(' ')[1];
-    blockedUsers.delete(targetPhone);
-    await sendText(sessionId, from, `✅ Unblocked ${targetPhone}`);
-    return true;
-  }
-
-  if (cmd.startsWith('/info ')) {
-    const targetPhone = cmd.split(' ')[1];
-    const info = `📊 *User: ${targetPhone}*\n\n` +
-      `Bot Mode: ${botUsers.has(targetPhone) ? '✅' : '❌'}\n` +
-      `Human: ${humanHandling.has(targetPhone) ? '✅' : '❌'}\n` +
-      `Blocked: ${blockedUsers.has(targetPhone) ? '🚫' : '❌'}\n` +
-      `AI Chat: ${conversationHistory.has(targetPhone) ? '✅' : '❌'}`;
-    await sendText(sessionId, from, info);
-    return true;
-  }
-
-  if (cmd === '/stats') {
-    const stats = `📊 *Bot Stats*\n\n` +
-      `👥 Active: ${botUsers.size}\n` +
-      `🤝 Human: ${humanHandling.size}\n` +
-      `🚫 Blocked: ${blockedUsers.size}\n` +
-      `💬 Chats: ${conversationHistory.size}\n` +
-      `🤖 AI: ${openai ? '✅' : '❌'}`;
-    await sendText(sessionId, from, stats);
-    return true;
-  }
-
-  if (cmd.startsWith('/broadcast ')) {
-    const message = text.substring('/broadcast '.length);
-    let sent = 0;
-    for (const user of botUsers) {
-      await sendText(sessionId, user, `📢 *Announcement*\n\n${message}`);
-      sent++;
+    if (cmd === '/reload') {
+        await loadProductKnowledge();
+        await sendText(sessionId, from, "✅ Products reloaded!");
+        return true;
     }
-    await sendText(sessionId, from, `✅ Sent to ${sent} users`);
-    return true;
-  }
 
-  if (cmd === '/help' || cmd === '/commands') {
-    const help = `🔧 *Admin Commands*\n\n` +
-      `👤 User Control:\n` +
-      `• /resume {phone}\n` +
-      `• /block {phone}\n` +
-      `• /unblock {phone}\n` +
-      `• /info {phone}\n\n` +
-      `📊 System:\n` +
-      `• /stats\n` +
-      `• /broadcast {msg}\n` +
-      `• /reload\n` +
-      `• /help`;
-    await sendText(sessionId, from, help);
-    return true;
-  }
+    if (cmd === '/stats') {
+        const stats = `📊 *Bot Stats*\n\n` +
+            `👥 Active: ${botUsers.size}\n` +
+            `🤝 Human: ${humanHandling.size}\n` +
+            `🚫 Blocked: ${blockedUsers.size}\n` +
+            `💬 Chats: ${conversationHistory.size}\n` +
+            `🤖 AI: ${openai ? '✅' : '❌'}\n` +
+            `🕓 Business Hours: ${isWithinBusinessHours() ? 'ONLINE' : 'OFFLINE'}\n` +
+            `📧 Auto-replied: ${autoRepliedUsers.size}`;
+        await sendText(sessionId, from, stats);
+        return true;
+    }
 
-  if (cmd === '/reload') {
-    await loadProductKnowledge();
-    await sendText(sessionId, from, "✅ Products reloaded!");
-    return true;
-  }
+    if (cmd.startsWith('/resume ')) {
+        const target = parts[1];
+        humanHandling.delete(target);
+        await sendText(sessionId, from, `✅ Bot resumed for ${target}`);
+        await sendText(sessionId, target, "🤖 *Bot resumed!* Reply *MENU* for products!");
+        return true;
+    }
 
-  return false;
+    if (cmd.startsWith('/block ')) {
+        const target = parts[1];
+        blockedUsers.add(target);
+        botUsers.delete(target);
+        await sendText(sessionId, from, `🚫 Blocked ${target}`);
+        return true;
+    }
+
+    if (cmd.startsWith('/unblock ')) {
+        const target = parts[1];
+        blockedUsers.delete(target);
+        await sendText(sessionId, from, `✅ Unblocked ${target}`);
+        return true;
+    }
+
+    if (cmd.startsWith('/info ')) {
+        const target = parts[1];
+        const info = `📊 *User: ${target}*\n\n` +
+            `Bot Mode: ${botUsers.has(target) ? '✅' : '❌'}\n` +
+            `Human: ${humanHandling.has(target) ? '✅' : '❌'}\n` +
+            `Blocked: ${blockedUsers.has(target) ? '🚫' : '❌'}\n` +
+            `AI Chat: ${conversationHistory.has(target) ? '✅' : '❌'}\n` +
+            `Auto-replied: ${autoRepliedUsers.has(target) ? '✅' : '❌'}`;
+        await sendText(sessionId, from, info);
+        return true;
+    }
+
+    if (cmd.startsWith('/broadcast ')) {
+        const message = text.substring('/broadcast '.length);
+        let sent = 0;
+        for (const user of botUsers) {
+            await sendText(sessionId, user, `📢 *Announcement*\n\n${message}`);
+            sent++;
+        }
+        await sendText(sessionId, from, `✅ Sent to ${sent} users`);
+        return true;
+    }
+
+    if (cmd === '/help' || cmd === '/commands') {
+        const help = `🔧 *Admin Commands*\n\n` +
+            `👤 User Control:\n` +
+            `• /resume {phone}\n` +
+            `• /block {phone}\n` +
+            `• /unblock {phone}\n` +
+            `• /info {phone}\n\n` +
+            `📊 System:\n` +
+            `• /stats\n` +
+            `• /broadcast {msg}\n` +
+            `• /reload\n` +
+            `• /help`;
+        await sendText(sessionId, from, help);
+        return true;
+    }
+
+    return false;
 }
 
-// ================= WEBHOOK =================
+// ============================================================================
+// WEBHOOK HANDLER
+// ============================================================================
 app.post("/webhook", async (req, res) => {
-  res.sendStatus(200);
+    res.sendStatus(200);
 
-  const core = extractCore(req.body);
-  if (!core || !core.id || !core.from || core.fromMe) return;
+    const core = extractCore(req.body);
+    if (!core || !core.id || !core.from || core.fromMe) return;
 
-  const now = Date.now();
-  if (handledMessages.has(core.id)) {
-    const age = now - handledMessages.get(core.id);
-    if (age < 60000) return;
-  }
-  handledMessages.set(core.id, now);
+    // Deduplication
+    if (handledMessages.has(core.id)) return;
+    handledMessages.set(core.id, Date.now());
 
-  const { sessionId, from, text, buttonResponse } = core;
+    const { sessionId, from, text, buttonResponse } = core;
 
-  if (isAdmin(from) && text && text.startsWith('/')) {
-    const handled = await handleAdminCommand(sessionId, from, text);
-    if (handled) return;
-  }
+    // Check business hours state
+    checkAndResetAutoReplies();
+    const isOnline = isWithinBusinessHours();
 
-  if (isAdmin(from) && text && !text.startsWith('/')) {
-    return;
-  }
-
-  if (blockedUsers.has(from)) return;
-
-  if (humanHandling.has(from)) {
-    humanHandling.set(from, Date.now());
-    return;
-  }
-
-  if (buttonResponse) {
-    if (buttonResponse.includes('menu')) {
-      await sendMenu(sessionId, from);
-      return;
+    // Admin commands (always work)
+    if (isAdmin(from) && text && text.startsWith('/')) {
+        const handled = await handleAdminCommand(sessionId, from, text);
+        if (handled) return;
     }
-    if (buttonResponse.includes('human')) {
-      await escalateToHuman(sessionId, from);
-      return;
-    }
-  }
 
-  if (text) {
+    // Admin manual chat (don't interfere)
+    if (isAdmin(from) && text && !text.startsWith('/')) return;
+
+    // Blocked users
+    if (blockedUsers.has(from)) return;
+
+    // OFFLINE MODE - Send auto-reply once per window
+    if (!isOnline && !isAdmin(from)) {
+        await sendOfflineAutoReply(sessionId, from);
+        return; // Stop processing - no bot interaction outside business hours
+    }
+
+    // ONLINE MODE - Normal bot operation
+    if (humanHandling.has(from)) {
+        humanHandling.set(from, Date.now());
+        return;
+    }
+
+    // Button responses
+    if (buttonResponse) {
+        if (buttonResponse.includes('menu')) {
+            await sendMenu(sessionId, from);
+            return;
+        }
+        if (buttonResponse.includes('human')) {
+            await escalateToHuman(sessionId, from);
+            return;
+        }
+    }
+
+    // Text commands
+    if (text) {
+        const lowerText = text.toLowerCase().trim();
+
+        if (lowerText === "snippy" || lowerText === "bot" || lowerText === "start") {
+            await activateBot(sessionId, from);
+            return;
+        }
+
+        if (lowerText === "stop" || lowerText === "exit") {
+            await deactivateBot(sessionId, from);
+            return;
+        }
+
+        if (lowerText === "human" || lowerText === "support" || lowerText === "help") {
+            if (!botUsers.has(from)) botUsers.add(from);
+            await escalateToHuman(sessionId, from);
+            return;
+        }
+    }
+
+    if (!botUsers.has(from)) return;
+    if (!text) return;
+
     const lowerText = text.toLowerCase().trim();
 
-    if (lowerText === "snippy" || lowerText === "bot" || lowerText === "start") {
-      await activateBot(sessionId, from);
-      return;
+    if (lowerText === "menu") {
+        await sendMenu(sessionId, from);
+        return;
     }
 
-    if (lowerText === "stop" || lowerText === "exit") {
-      await deactivateBot(sessionId, from);
-      return;
+    // Number selection
+    const numberMatch = text.match(/^(\d+)$/);
+    if (numberMatch && global.userProducts?.has(from)) {
+        const index = parseInt(numberMatch[1]) - 1;
+        const userProductList = global.userProducts.get(from);
+
+        if (index >= 0 && index < userProductList.length) {
+            await sendText(sessionId, from, userProductList[index].productInfo);
+            return;
+        }
     }
 
-    if (lowerText === "human" || lowerText === "support" || lowerText === "help") {
-      if (!botUsers.has(from)) botUsers.add(from);
-      await escalateToHuman(sessionId, from);
-      return;
+    // Product keyword matching
+    const products = global.allProducts;
+    if (products) {
+        const match = products.find(p =>
+            lowerText.includes(p.id.toLowerCase()) ||
+            p.menuTitle.toLowerCase().includes(lowerText) ||
+            (p.triggerKeywords && p.triggerKeywords.some(kw => lowerText.includes(kw.toLowerCase())))
+        );
+
+        if (match) {
+            await sendText(sessionId, from, match.productInfo);
+            return;
+        }
     }
-  }
 
-  if (!botUsers.has(from)) return;
-  if (!text) return;
+    // AI query
+    console.log("🤖 AI:", text.substring(0, 40));
+    const aiResponse = await askProductExpert(from, text);
 
-  const lowerText = text.toLowerCase().trim();
+    if (aiResponse === "ESCALATE") {
+        await escalateToHuman(sessionId, from);
+    } else if (aiResponse === "ORDER_INFO") {
+        const orderMsg = "🛍️ *How to Order on Snippy Mart*\n\n" +
+            "1️⃣ Visit our website:\n" +
+            "🌐 *snippymart.com*\n\n" +
+            "2️⃣ Choose your product and checkout\n\n" +
+            "💳 *Payment Options:*\n\n" +
+            "✅ Bank Transfer (Available now)\n" +
+            "✅ Binance USDT (Available now)\n" +
+            "💳 Card Payment (Contact us for secure link)\n\n" +
+            "_For card payment, type *HUMAN* and our team will send you a secure payment link!_\n\n" +
+            "Reply *MENU* to browse products! 🚀";
 
-  if (lowerText === "menu") {
-    await sendMenu(sessionId, from);
-    return;
-  }
-
-  const numberMatch = text.match(/^(\d+)$/);
-  if (numberMatch && global.userProducts?.has(from)) {
-    const index = parseInt(numberMatch[1]) - 1;
-    const userProductList = global.userProducts.get(from);
-    
-    if (index >= 0 && index < userProductList.length) {
-      await sendProductFlow(sessionId, from, userProductList[index].id);
-      return;
+        await sendWithButtons(sessionId, from, orderMsg, [
+            { id: "menu", text: "🛍️ View Products" },
+            { id: "human", text: "💬 Card Payment" }
+        ]);
+    } else if (aiResponse) {
+        await sendText(sessionId, from, aiResponse);
+    } else {
+        await sendText(sessionId, from, "I'm having trouble. Type *HUMAN* for support or *MENU* for products!");
     }
-  }
-
-  const products = await getProducts();
-  if (products) {
-    const match = products.find(p => 
-      lowerText.includes(p.id.toLowerCase()) || 
-      p.menuTitle.toLowerCase().includes(lowerText) ||
-      (p.triggerKeywords && p.triggerKeywords.some(kw => lowerText.includes(kw.toLowerCase())))
-    );
-
-    if (match) {
-      await sendProductFlow(sessionId, from, match.id);
-      return;
-    }
-  }
-
-  console.log("🤖 AI:", text.substring(0, 40));
-  await logEvent(from, "AI_QUERY", null, text);
-  
-  const aiResponse = await askProductExpert(from, text);
-  
-  if (aiResponse === "ESCALATE") {
-    await escalateToHuman(sessionId, from);
-  } else if (aiResponse === "ORDER_INFO") {
-    await sendOrderingInfo(sessionId, from);
-  } else if (aiResponse) {
-    await sendText(sessionId, from, aiResponse);
-  } else {
-    await sendText(sessionId, from, "I'm having trouble. Type *HUMAN* for support or *MENU* for products!");
-  }
 });
 
-// ================= ENDPOINTS =================
+// ============================================================================
+// SYSTEM ENDPOINTS
+// ============================================================================
 app.get("/", (_, res) => {
-  res.json({
-    status: "online",
-    service: "Snippy Mart AI Bot",
-    version: "3.0.1",
-    ai: openai ? "enabled" : "disabled",
-    activeUsers: botUsers.size,
-    humanHandling: humanHandling.size,
-    products: global.allProducts?.length || 0,
-    admins: ADMIN_NUMBERS.length
-  });
+    res.json({
+        status: "online",
+        service: "Snippy Mart WhatsApp Bot",
+        version: "4.0.0 - Business Hours Edition",
+        ai: openai ? "enabled" : "disabled",
+        activeUsers: botUsers.size,
+        humanHandling: humanHandling.size,
+        products: global.allProducts?.length || 0,
+        businessHours: isWithinBusinessHours() ? "ONLINE" : "OFFLINE",
+        autoRepliedToday: autoRepliedUsers.size
+    });
 });
 
 app.post("/reload", async (req, res) => {
-  await loadProductKnowledge();
-  res.json({ 
-    success: true, 
-    products: global.allProducts?.length || 0 
-  });
+    await loadProductKnowledge();
+    res.json({
+        success: true,
+        products: global.allProducts?.length || 0
+    });
 });
 
-// ================= START =================
+// ============================================================================
+// SERVER START
+// ============================================================================
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log("🚀 SNIPPY MART AI BOT - PRODUCTION v3.0.1");
-  console.log(`📡 Port: ${PORT}`);
-  console.log(`🤖 AI: ${openai ? '✅ Enabled' : '❌ Disabled'}`);
-  console.log(`👥 Admins: ${ADMIN_NUMBERS.join(', ')}`);
-  console.log(`📚 Products: ${global.allProducts?.length || 'Loading...'}`);
-  console.log("✅ READY!");
+    console.log("🚀 SNIPPY MART WHATSAPP BOT v4.0.0");
+    console.log(`📡 Port: ${PORT}`);
+    console.log(`🤖 AI: ${openai ? '✅ Enabled' : '❌ Disabled'}`);
+    console.log(`👥 Admins: ${ADMIN_NUMBERS.join(', ')}`);
+    console.log(`🕓 Business Hours: ${isWithinBusinessHours() ? 'ONLINE ✅' : 'OFFLINE ⏰'}`);
+    console.log(`📚 Products: ${global.allProducts?.length || 'Loading...'}`);
+    console.log("✅ READY!");
 });
